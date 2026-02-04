@@ -204,11 +204,27 @@ USER_AGENTS = [
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
 ]
 
-# Configuraciones específicas por dominio
+# Lista blanca de dominios confiables (menos agresivo con soft-404)
+TRUSTED_DOMAINS = [
+    "canva.com",
+    "crehana.com",
+    "openstax.org",
+    "coca-cola.com",
+    "wikipedia.org",
+    "youtube.com",
+    "youtu.be",
+    "github.com",
+    "stackoverflow.com",
+    "google.com",
+    "microsoft.com",
+    "amazon.com",
+    "bbc.com",
+]
+
+
 DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
     "facebook.com": {
         "requires_cookies": True,
-        # 400 puede ser una página válida de "algo salió mal" pero NO link roto
         "accept_codes": [200, 302, 400],
         "additional_headers": {
             "Accept": (
@@ -225,7 +241,7 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
     },
     "linkedin.com": {
         "requires_cookies": True,
-        # LinkedIn suele devolver 999 para scraping, pero el recurso existe
+        # 999 es típico de LinkedIn cuando bloquea bots, pero el recurso existe
         "accept_codes": [200, 302, 999],
         "additional_headers": {
             "Accept": (
@@ -256,50 +272,90 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
         "trusted_domain": True,
         "accept_codes": [200, 206],
     },
-}
 
-# Lista blanca de dominios confiables (menos agresivo con soft-404)
-TRUSTED_DOMAINS = [
-    "canva.com",
-    "crehana.com",
-    "openstax.org",
-    "coca-cola.com",
-    "wikipedia.org",
-    "github.com",
-    "stackoverflow.com",
-    "youtube.com",
-    "google.com",
-    "microsoft.com",
-    "amazon.com",
-    "bbc.com",
-]
+    # Biblioteca UTP
+    "tubiblioteca.utp.edu.pe": {
+        "trusted_domain": True,
+        # redirecciones a login + 200 son válidos
+        "accept_codes": [200, 302, 303, 307, 308],
+        # este dominio puede dar problemas de certificado → lo ignoramos
+        "skip_ssl_verify": True,
+    },
+
+    # Wikipedia: a veces devuelve 403 a scripts, pero la página existe
+    "wikipedia.org": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 403, 429],
+    },
+
+    # YouTube (vídeos, incluidos privados / eliminados)
+    "youtube.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "youtu.be": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+
+    # X / Twitter: página puede devolver 200 aunque la cuenta o el post no exista
+    "x.com": {
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+    },
+    "twitter.com": {
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+    },
+}
 
 # ======================================================
 # PATRONES DE SOFT-404 MEJORADOS (V5)
 # ======================================================
 
-SOFT_404_PATTERNS = [
-    # Inglés muy específico de error 404
+# ======================================================
+# PATRONES DE SOFT-404 MEJORADOS (V5) - REFORZADO
+# ======================================================
+
+# Patrones muy específicos que indican con alta confianza que la página
+# no existe o el recurso ya no está disponible (soft-404).
+SOFT_404_STRONG_PATTERNS = [
+    # Inglés
     r"\b404\s+error\b",
     r"\berror\s+404\b",
     r"page\s+not\s+found",
     r"file\s+not\s+found",
     r"document\s+not\s+found",
+    r"resource\s+not\s+found",
     r"the\s+page\s+you.*(?:requested|looking\s+for).*not\s+found",
     r"sorry.*page.*doesn't\s+exist",
 
     # Español
     r"p[aá]gina\s+no\s+encontrada",
+    r"la\s+p[aá]gina\s+no\s+existe",
     r"la\s+p[aá]gina\s+que\s+buscas\s+no\s+existe",
-    r"error\s+404",
-
-    # Caso El Peruano y similares
+    r"esta\s+p[aá]gina\s+no\s+existe",
+    r"esta\s+p[aá]gina\s+no\s+est[aá]\s+disponible",
+    r"recurso\s+no\s+disponible",
+    r"contenido\s+no\s+disponible",
     r"the\s+specified\s+url\s+cannot\s+be\s+found",
 
-    # YouTube
+    # Repositorios / sistemas documentales
+    r"item\s+not\s+found",
+    r"handle\s+not\s+found",
+    r"bitstream\s+not\s+found",
+
+    # YouTube (vídeo privado / eliminado)
     r"this\s+video\s+(?:isn't\s+available|is\s+unavailable)",
     r"video\s+no\s+disponible",
+    r"este\s+video\s+es\s+privado",
+    r"este\s+video\s+ha\s+sido\s+eliminado",
+
+    # X / Twitter (página que no existe)
+    r"esta\s+cuenta\s+no\s+existe",
+    r"la\s+cuenta\s+no\s+existe",
+    r"esta\s+p[aá]gina\s+no\s+existe\.\s*intenta\s+hacer\s+otra\s+b[uú]squeda",
 ]
+
+SOFT_404_STRONG_RE = re.compile("|".join(SOFT_404_STRONG_PATTERNS), re.IGNORECASE)
 
 # Patrones que indican contenido real (artículo, post, etc.)
 VALID_CONTENT_PATTERNS = [
@@ -310,10 +366,64 @@ VALID_CONTENT_PATTERNS = [
     r"og:type",
     r"twitter:card",
 ]
-
-SOFT_404_RE = re.compile("|".join(SOFT_404_PATTERNS), re.IGNORECASE)
 VALID_CONTENT_RE = re.compile("|".join(VALID_CONTENT_PATTERNS), re.IGNORECASE)
 
+
+def _calculate_content_score(text: str, url: str) -> int:
+    """Score heurístico para distinguir página real de página de error genérica."""
+    score = 0
+    chunk = text[:5000]
+    content_len = len(text)
+
+    # Bonificación por estructuras típicas de contenido real
+    if VALID_CONTENT_RE.search(chunk):
+        score += 20
+
+    # Bonificación por longitud (las páginas de error suelen ser cortas)
+    if content_len > 10000:
+        score += 15
+    elif content_len > 5000:
+        score += 10
+    elif content_len > 2000:
+        score += 5
+
+    # Dominios confiables (Wikipedia, YouTube, etc.) → normalmente contenido real
+    if _is_trusted_domain(url):
+        score += 25
+
+    # Metadatos típicos de páginas reales
+    head_chunk = text[:2000]
+    if "og:title" in head_chunk or "twitter:title" in head_chunk:
+        score += 10
+
+    # Contenido demasiado corto (páginas de error muy mínimas)
+    if content_len < 500:
+        score -= 10
+
+    return score
+
+
+def _soft_404_detect_v5(body_text: str, url: str) -> Tuple[bool, int]:
+    """
+    Detección reforzada de soft-404:
+    - Primero busca patrones fuertes (YouTube 'Video no disponible',
+      X 'Esta página no existe', etc.).
+    - Si no encuentra patrones fuertes, usa el score heurístico.
+    Devuelve (es_soft_404, nivel_confianza).
+    """
+    chunk = body_text[:8000]
+
+    # 1) Patrones muy específicos → confianza casi total
+    if SOFT_404_STRONG_RE.search(chunk):
+        return True, 95
+
+    # 2) Score heurístico (respaldo, más conservador)
+    score = _calculate_content_score(body_text, url)
+    if score < -10:
+        # score negativo fuerte → consideramos soft-404 de alta confianza
+        return True, min(90, abs(score))
+
+    return False, 0
 
 # ======================================================
 # VALIDACIÓN DE CONTENT-TYPE MEJORADA (V5)
@@ -1398,6 +1508,9 @@ async def _run_link_check_ultra_v5(
     - Concurrencia global y por host.
     - Cache por URL en session_state["status_cache"].
     - Headers por dominio (User-Agent realista).
+    - **NUEVO**: dos clientes HTTPX
+        * client_ssl   → verify = verify_ssl (según toggle)
+        * client_nossl → verify = False (para dominios con skip_ssl_verify)
     """
     sem_global = asyncio.Semaphore(max(1, int(concurrency_global)))
     host_sems: Dict[str, asyncio.Semaphore] = {}
@@ -1424,6 +1537,7 @@ async def _run_link_check_ultra_v5(
     # Headers base genéricos
     base_headers = _build_headers_for_domain("https://example.com")
 
+    # 👇 Creamos dos clientes: uno respeta el toggle verify_ssl, el otro siempre ignora certificados
     async with httpx.AsyncClient(
         headers=base_headers,
         limits=limits,
@@ -1431,7 +1545,15 @@ async def _run_link_check_ultra_v5(
         http2=False,
         verify=verify_ssl,
         follow_redirects=True,
-    ) as client:
+    ) as client_ssl, httpx.AsyncClient(
+        headers=base_headers,
+        limits=limits,
+        timeout=timeout,
+        http2=False,
+        verify=False,
+        follow_redirects=True,
+    ) as client_nossl:
+
         total = len(links_with_rows)
         done = 0
         results: List[Dict[str, Any]] = []
@@ -1440,7 +1562,15 @@ async def _run_link_check_ultra_v5(
             nonlocal done
             host_sem = get_host_sem(u)
 
-            # Actualizamos headers del cliente para este dominio
+            # Config por dominio
+            config = _get_domain_config(u)
+
+            # Si el usuario desactivó "Verificar SSL" → usamos siempre client_nossl.
+            # Si está activado, sólo usamos client_nossl para dominios que tengan skip_ssl_verify = True
+            use_no_ssl = (not verify_ssl) or bool(config.get("skip_ssl_verify", False))
+            client = client_nossl if use_no_ssl else client_ssl
+
+            # Headers ajustados por dominio (User-Agent, Referer, etc.)
             client.headers.update(_build_headers_for_domain(u))
 
             async with sem_global:
@@ -1471,9 +1601,7 @@ async def _run_link_check_ultra_v5(
             results.append(await coro)
 
         st.session_state["status_cache"] = cache
-
         return results
-
 
 def run_async(coro):
     """
@@ -1583,7 +1711,6 @@ RE_BULLET = re.compile(r"^\s*(?:•|-|\d+[\.\)]|\([a-zA-Z0-9]\))\s+")
 RE_FUENTE_HEADER = re.compile(r"^\s*fuente[s]?\s*:\s*$", re.IGNORECASE)
 RE_FUENTE_INLINE = re.compile(r"^\s*fuente[s]?\s*:", re.IGNORECASE)
 
-
 class PDFBatchProcessor:
     """Procesador optimizado para múltiples archivos PDF (lógica original, sin GUI Tk)."""
 
@@ -1593,7 +1720,7 @@ class PDFBatchProcessor:
         self.progress_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 
     def process_single_pdf(self, pdf_path: str, output_dir: str, options: Dict) -> Dict:
-        """Procesa un único archivo PDF → Word con filtrado de bibliografía."""
+        """Procesa un único archivo PDF → Word (permite filtrar o no bibliografía según `options`)."""
         if self.cancel_event.is_set():
             return {"status": "cancelled", "file": pdf_path}
 
@@ -1648,54 +1775,35 @@ class PDFBatchProcessor:
             with fitz.open(pdf_path) as doc:
                 num_pages = len(doc)
 
-                self.progress_queue.put(
-                    {"type": "file_pages", "file": Path(pdf_path).name, "total_pages": num_pages}
-                )
+            self.progress_queue.put(
+                {"type": "file_pages", "file": Path(pdf_path).name, "total_pages": num_pages}
+            )
 
-                output_path = Path(output_dir) / f"{Path(pdf_path).stem}.docx"
-                doc_word = Document()
+            output_path = Path(output_dir) / f"{Path(pdf_path).stem}.docx"
+            doc_word = Document()
 
-                if use_multithread and num_pages > 3:
-                    from concurrent.futures import ThreadPoolExecutor
+            if use_multithread and num_pages > 3:
+                from concurrent.futures import ThreadPoolExecutor
 
-                    futures = []
-                    results: List[Tuple[int, str]] = []
-                    with ThreadPoolExecutor(max_workers=options.get("max_workers", 4)) as executor:
-                        for page_num in range(num_pages):
-                            if self.cancel_event.is_set():
-                                break
-                            future = executor.submit(
-                                self._extract_and_process_page,
-                                pdf_path,
-                                page_num,
-                                options,
-                            )
-                            futures.append((page_num, future))
-
-                        for page_num, future in futures:
-                            if self.cancel_event.is_set():
-                                break
-                            page_idx, text = future.result()
-                            results.append((page_idx, text))
-
-                            self.progress_queue.put(
-                                {
-                                    "type": "page_progress",
-                                    "file": Path(pdf_path).name,
-                                    "page": page_num + 1,
-                                    "total": num_pages,
-                                }
-                            )
-
-                    results.sort(key=lambda x: x[0])
-                    page_texts = [text for _, text in results]
-                else:
-                    page_texts = []
+                futures: List[Tuple[int, Any]] = []
+                results: List[Tuple[int, str]] = []
+                with ThreadPoolExecutor(max_workers=options.get("max_workers", 4)) as executor:
                     for page_num in range(num_pages):
                         if self.cancel_event.is_set():
                             break
-                        _, text = self._extract_and_process_page(pdf_path, page_num, options)
-                        page_texts.append(text)
+                        future = executor.submit(
+                            self._extract_and_process_page,
+                            pdf_path,
+                            page_num,
+                            options,
+                        )
+                        futures.append((page_num, future))
+
+                    for page_num, future in futures:
+                        if self.cancel_event.is_set():
+                            break
+                        page_idx, text = future.result()
+                        results.append((page_idx, text))
 
                         self.progress_queue.put(
                             {
@@ -1706,30 +1814,50 @@ class PDFBatchProcessor:
                             }
                         )
 
-                if self.cancel_event.is_set():
-                    return False, str(output_path), {"status": "cancelled"}
+                results.sort(key=lambda x: x[0])
+                page_texts = [text for _, text in results]
+            else:
+                page_texts: List[str] = []
+                for page_num in range(num_pages):
+                    if self.cancel_event.is_set():
+                        break
+                    _, text = self._extract_and_process_page(pdf_path, page_num, options)
+                    page_texts.append(text)
 
-                for idx, text in enumerate(page_texts):
-                    if text.strip():
-                        for line in text.split("\n"):
-                            if line.strip():
-                                doc_word.add_paragraph(line)
-                    if idx < len(page_texts) - 1:
-                        doc_word.add_page_break()
+                    self.progress_queue.put(
+                        {
+                            "type": "page_progress",
+                            "file": Path(pdf_path).name,
+                            "page": page_num + 1,
+                            "total": num_pages,
+                        }
+                    )
 
-                doc_word.save(str(output_path))
+            if self.cancel_event.is_set():
+                return False, str(output_path), {"status": "cancelled"}
 
-                stats = {
-                    "archivo": pdf_path,
-                    "nombre_archivo": Path(pdf_path).stem,
-                    "paginas_procesadas": num_pages,
-                    "archivo_salida": str(output_path),
-                    "tamano_salida": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
-                    "errores": sum(1 for text in page_texts if "ERROR:" in text),
-                    "timestamp": datetime.now().isoformat(),
-                }
+            # Volcar el texto procesado al documento Word
+            for idx, text in enumerate(page_texts):
+                if text.strip():
+                    for line in text.split("\n"):
+                        if line.strip():
+                            doc_word.add_paragraph(line)
+                if idx < len(page_texts) - 1:
+                    doc_word.add_page_break()
 
-                return True, str(output_path), stats
+            doc_word.save(str(output_path))
+
+            stats = {
+                "archivo": pdf_path,
+                "nombre_archivo": Path(pdf_path).stem,
+                "paginas_procesadas": num_pages,
+                "archivo_salida": str(output_path),
+                "tamano_salida": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
+                "errores": sum(1 for text in page_texts if "ERROR:" in text),
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            return True, str(output_path), stats
 
         except Exception as e:
             logger.error(f"Error interno procesando {pdf_path}: {e}")
@@ -1749,8 +1877,14 @@ class PDFBatchProcessor:
                     raw_text = page.get_text("text")
 
                 cleaned_text = self._clean_text(raw_text)
-                text_no_refs = self._filter_references(cleaned_text)
-                text_no_formulas = self._filter_formulas(text_no_refs)
+
+                # Solo se filtran referencias si la opción lo indica explícitamente
+                if options.get("filtrar_bibliografia", False):
+                    text_base = self._filter_references(cleaned_text)
+                else:
+                    text_base = cleaned_text
+
+                text_no_formulas = self._filter_formulas(text_base)
                 reformatted_text = self._reformat_sentences(text_no_formulas)
 
                 result = f"=== PÁGINA {page_num + 1} ===\n{reformatted_text.strip()}"
@@ -1789,6 +1923,7 @@ class PDFBatchProcessor:
                 buffer = []
 
         for line in lines:
+            # Si parece ecuación o línea de referencia, no la unimos con el buffer
             if "=" in line or self._is_reference_line(line):
                 flush_buffer()
                 final_lines.append(line)
@@ -1870,6 +2005,7 @@ class PDFBatchProcessor:
                         in_ref_block = True
                         continue
                 else:
+                    # “Fuente: …” en la misma línea → se asume referencia y se omite
                     continue
 
             result.append(line)
@@ -1885,9 +2021,11 @@ class PDFBatchProcessor:
         if not text.strip():
             return text
 
+        # Unir todo en una sola línea base
         text = re.sub(r"\s*\n\s*", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
 
+        # Proteger números tipo 3.14 para que no se separen mal
         text = re.sub(r"(\d+)\.\s+(\d{1,3})", r"\1.\2", text)
 
         def protect_dots(match):
@@ -1895,11 +2033,14 @@ class PDFBatchProcessor:
 
         text = re.sub(r"\([^)]*\)", protect_dots, text)
 
+        # Proteger numeraciones tipo "1. Introducción"
         text = re.sub(r"\b(\d+)\.\s+(?=[A-ZÁÉÍÓÚÑ])", r"\1§ ", text)
 
+        # Cortar oraciones en puntos seguidos
         text = re.sub(r"(?<!\d)\.\s+(?!\d)", ".\n", text)
         text = re.sub(r"\)\s+(?=[A-ZÁÉÍÓÚÑ¿])", ")\n", text)
 
+        # Restaurar marcadores
         text = text.replace("§", ".")
         text = text.replace("[[DOT_PAREN]]", ".")
 
@@ -1909,7 +2050,7 @@ class PDFBatchProcessor:
         return "\n".join(lines)
 
     def _normalize_text(self, text: str) -> str:
-        """Normaliza texto para comparaciones."""
+        """Normaliza texto para comparaciones (sin tildes, minúsculas, espacios colapsados)."""
         if not text:
             return ""
         text = text.lower()
@@ -1936,7 +2077,6 @@ class PDFBatchProcessor:
         ref_like = sum(1 for line in window if self._is_reference_line(line))
 
         return ref_like >= 2 or ref_like / total >= 0.4
-
 
 # ======================================================
 # DESCARGA MASIVA (DOCS PDF/PPT/WORD)
@@ -2287,17 +2427,88 @@ def _iter_paragraphs_with_page(doc) -> List[Tuple[int, "docx.text.paragraph.Para
 
 def _extract_urls_from_text(text: str) -> List[str]:
     """
-    Extrae URLs que aparecen como texto plano dentro de un string.
-    Limpia caracteres de puntuación al final.
+    Extrae URLs en texto plano, corrigiendo enlaces cortados por guion + espacio
+    o guion + salto de línea (ej. '...spij-ext- web/#/...' o '...cgi- bin/...').
+
+    Soporta prefijos:
+      - http://, https://
+      - www.
+      - mailto:
+      - tel:
     """
+    s = _strip_invisible(text or "")
+    if not s:
+        return []
+
+    # Prefijos reconocidos como inicio de URL
+    prefixes = ("http://", "https://", "www.", "mailto:", "tel:")
+
+    # Conjunto de caracteres válidos dentro de una URL (sin espacios)
+    allowed = set("abcdefghijklmnopqrstuvwxyz"
+                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                  "0123456789"
+                  "-._~:/?#[]@!$&'()*+,;=%")
+
     urls: List[str] = []
-    text = _strip_invisible(text or "")
-    for match in DOCX_URL_RE.findall(text):
-        u = match.strip().strip("()[]{}.,;:!?'\"")
-        if not u:
+    i, n = 0, len(s)
+
+    while i < n:
+        lower = s[i:].lower()
+        prefix = next((p for p in prefixes if lower.startswith(p)), None)
+        if not prefix:
+            i += 1
             continue
-        urls.append(u)
+
+        # Hemos encontrado el inicio de una URL
+        start = i
+        j = i + len(prefix)
+        url_chars = list(s[start:j])
+        last_char = url_chars[-1] if url_chars else ""
+
+        while j < n:
+            c = s[j]
+
+            # Caracter normal permitido en una URL
+            if c in allowed:
+                url_chars.append(c)
+                last_char = c
+                j += 1
+                continue
+
+            # Espacios (incluye saltos de línea internos de Word)
+            if c.isspace():
+                # Miramos más adelante saltando todos los espacios
+                k = j + 1
+                while k < n and s[k].isspace():
+                    k += 1
+
+                # Caso especial: URL cortada por guion de final de línea,
+                # p.ej. '...spij-ext-' + salto + 'web/#/...'  o 'cgi-' + salto + 'bin/...'
+                if k < n and last_char == "-" and s[k] in allowed:
+                    # No añadimos el espacio, continuamos la URL directamente
+                    j = k
+                    continue
+
+                # Si no es el caso anterior, terminamos la URL en el último carácter válido
+                break
+
+            # Puntuación habitual que cierra una URL
+            if c in ".,;:!?)[]{}\"'":
+                break
+
+            # Otro carácter raro -> consideramos fin del enlace
+            break
+
+        # Construimos la URL y limpiamos puntuación de cierre
+        url = "".join(url_chars).rstrip(".,;:!?)[]{}\"'")
+        if url:
+            urls.append(url)
+
+        # Continuamos después de lo que hemos analizado
+        i = j
+
     return urls
+
 
 
 def _extract_urls_from_paragraph_xml(para, doc_part) -> List[str]:
@@ -2473,7 +2684,13 @@ def _run_pdf_extraction_streamlit(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="utp_pdf_extr_"))
     processor = PDFBatchProcessor(max_workers=max_workers)
-    options = {"usar_multihilo": usar_multihilo, "max_workers": max_workers}
+    options = {
+    "usar_multihilo": usar_multihilo,
+    "max_workers": max_workers,
+    # 🔧 IMPORTANTE: no filtrar bibliografía para conservar todos los links
+    "filtrar_bibliografia": False,
+    }
+
 
     resultados: List[Dict[str, Any]] = []
     errores: List[Dict[str, Any]] = []
