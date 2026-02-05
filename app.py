@@ -7,7 +7,8 @@
 # Requisitos extra:
 #   pip install pymupdf python-docx requests
 #
-# Ejecutar:
+# Ejecutar:def validate_x_twitter_url(url: str) -> Tuple[bool, str]:
+
 #   streamlit run utp_broken_link_checker_ultra_v4_pdf_extr_descarga.py
 
 from __future__ import annotations
@@ -162,6 +163,10 @@ BINARY_EXTS = {
     ".webp", ".ico", ".exe", ".dmg", ".apk",
 }
 
+# 🔴 Regla especial: cualquier enlace que contenga 'canvas.utp'
+# debe considerarse SIEMPRE como ROTO en el reporte.
+CANVAS_UTP_KEYWORD = "canvas.utp"
+
 # Mapeo de extensiones a Content-Type esperado
 EXPECTED_CONTENT_TYPES = {
     ".pdf": ["application/pdf"],
@@ -305,6 +310,26 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
     "twitter.com": {
         "accept_codes": [200, 301, 302, 303, 307, 308],
     },
+
+     # 🔴 NUEVO: Google Sites – redirecciones dentro del mismo sitio
+    "sites.google.com": {
+        "trusted_domain": False,
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+    },
+
+    # 🔴 NUEVO: Universidad de Granada – posibles problemas de SSL
+    "ugr.es": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+        "skip_ssl_verify": True,
+    },
+
+    # 🔴 NUEVO: WordPress / Cloudflare – 403/503 para bots, pero recurso existe
+    "wordpress.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 503],
+    },
+
 }
 
 # ======================================================
@@ -327,6 +352,12 @@ SOFT_404_STRONG_PATTERNS = [
     r"resource\s+not\s+found",
     r"the\s+page\s+you.*(?:requested|looking\s+for).*not\s+found",
     r"sorry.*page.*doesn't\s+exist",
+
+    # 🔴 NUEVO: muy típico de Apache / Google / otros
+    r"the\s+requested\s+url\s+was\s+not\s+found\s+on\s+this\s+server",
+    r"la\s+url\s+solicitada\s+no\s+se\s+ha\s+encontrado\s+en\s+este\s+servidor",
+    r"no\s+se\s+ha\s+encontrado\s+la\s+url\s+solicitada",
+    r"no\s+se\s+ha\s+encontrado\s+el\s+sitio\s+web",
 
     # Español
     r"p[aá]gina\s+no\s+encontrada",
@@ -356,6 +387,7 @@ SOFT_404_STRONG_PATTERNS = [
 ]
 
 SOFT_404_STRONG_RE = re.compile("|".join(SOFT_404_STRONG_PATTERNS), re.IGNORECASE)
+
 
 # Patrones que indican contenido real (artículo, post, etc.)
 VALID_CONTENT_PATTERNS = [
@@ -613,6 +645,62 @@ def validate_youtube_url(url: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Error al validar YouTube: {str(e)}"
 
+def validate_x_twitter_url(url: str) -> Tuple[bool, str]:
+    """
+    Valida URLs de X/Twitter.
+
+    Consideramos sospechoso un enlace del estilo:
+        https://x.com/<usuario>/status
+    o
+        https://twitter.com/<usuario>/status
+
+    Es sintácticamente válido, pero no apunta a un tweet concreto
+    porque le falta el ID numérico.
+    """
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+
+        if "x.com" in domain or "twitter.com" in domain:
+            # Quitamos segmentos vacíos
+            segments = [s for s in parsed.path.split("/") if s]
+
+            # Esperamos algo como: /usuario/status/<id>
+            if len(segments) >= 2 and segments[1].startswith("status"):
+                # Falta el ID, o no es numérico → lo marcamos como inválido
+                if len(segments) < 3 or not re.fullmatch(r"\d{5,}", segments[2]):
+                    return False, "URL de X/Twitter sin ID de tweet (status incompleto)"
+
+        return True, ""
+    except Exception as e:
+        return False, f"Error al validar X/Twitter: {str(e)}"
+
+def validate_google_search_url(url: str) -> Tuple[bool, str]:
+    """
+    Marca como inválidas las URLs que apuntan a resultados de búsqueda de Google, por ejemplo:
+        https://www.google.com/search?q=movimiento+parabolico&...
+    Estas URLs son producto de una consulta y no son un recurso final estable.
+    """
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        path = parsed.path or ""
+
+        # Solo nos interesan las búsquedas tipo /search de Google
+        if "google.com" in domain and path.startswith("/search"):
+            # Si hay parámetro de búsqueda 'q', asumimos que es una consulta genérica
+            qs = parse_qs(parsed.query)
+            if "q" in qs and qs["q"] and any(qs["q"]):
+                return False, (
+                    "URL de búsqueda de Google (resultado de una consulta; "
+                    "usar el enlace directo al recurso y no la búsqueda)"
+                )
+
+        return True, ""
+    except Exception as e:
+        return False, f"Error al validar búsqueda de Google: {str(e)}"
+
+
 
 def validate_url_structure(url: str) -> Tuple[bool, str]:
     if "\\" in url:
@@ -869,6 +957,25 @@ def ui_card_open():
 def ui_card_close():
     st.markdown("</div>", unsafe_allow_html=True)
 
+def _style_status_dataframe(df: pd.DataFrame):
+    """
+    Devuelve un Styler con la columna Status coloreada:
+    - ACTIVO: verde
+    - ROTO: rojo
+    """
+    if "Status" not in df.columns:
+        return df.style
+
+    def _color_status(val):
+        v = str(val).upper()
+        if v == "ACTIVO":
+            return "background-color: #bbf7d0;"  # verde suave
+        if v == "ROTO":
+            return "background-color: #fecaca;"  # rojo suave
+        return ""
+
+    return df.style.applymap(_color_status, subset=["Status"])
+
 
 # ======= gestión robusta de módulo seleccionado =======================
 
@@ -909,15 +1016,75 @@ def on_change_module():
 # ======================================================
 # DATA / EXPORT
 # ======================================================
-
 def _to_excel_report(df_status: pd.DataFrame) -> bytes:
+    """
+    Genera el Excel final SOLO con la hoja 'Status', con las columnas:
+
+      Archivo | Página/Diapositiva | Link | Status | HTTP_Code | Detalle | Tipo_Problema
+
+    Además, pinta la columna Status (ACTIVO=verde, ROTO=rojo).
+    """
     from io import BytesIO
+    try:
+        from openpyxl.styles import PatternFill
+    except ImportError:
+        PatternFill = None  # Sin estilos si no está openpyxl.styles
+
+    # ====== Preparar DataFrame para STATUS ======
+    df_detalle = df_status.copy()
+
+    # Asegurar nombre de columna Archivo
+    if "Nombre del Archivo" in df_detalle.columns and "Archivo" not in df_detalle.columns:
+        df_detalle = df_detalle.rename(columns={"Nombre del Archivo": "Archivo"})
+
+    # Crear columnas faltantes si no existen
+    for col in ["Archivo", "Página/Diapositiva", "Link", "Status", "HTTP_Code", "Detalle", "Tipo_Problema"]:
+        if col not in df_detalle.columns:
+            df_detalle[col] = ""
+
+    # Reordenar columnas exactamente como se requiere
+    df_detalle = df_detalle[
+        ["Archivo", "Página/Diapositiva", "Link", "Status", "HTTP_Code", "Detalle", "Tipo_Problema"]
+    ]
 
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        df_status.to_excel(writer, index=False, sheet_name="Status")
-    return bio.getvalue()
+        # Hoja única: STATUS
+        df_detalle.to_excel(writer, index=False, sheet_name="Status")
 
+        if PatternFill is not None:
+            # Colorear columna Status en la hoja Status
+            green_fill = PatternFill(
+                start_color="C6EFCE",
+                end_color="C6EFCE",
+                fill_type="solid",
+            )
+            red_fill = PatternFill(
+                start_color="F8CBAD",
+                end_color="F8CBAD",
+                fill_type="solid",
+            )
+
+            ws = writer.sheets.get("Status")
+            if ws is not None:
+                # Buscar columna Status
+                status_col_idx = None
+                for cell in ws[1]:
+                    if str(cell.value).strip().lower() == "status":
+                        status_col_idx = cell.column
+                        break
+
+                if status_col_idx is not None:
+                    for row_idx in range(2, ws.max_row + 1):
+                        cell = ws.cell(row=row_idx, column=status_col_idx)
+                        value = str(cell.value).strip().upper() if cell.value is not None else ""
+                        if value == "ACTIVO":
+                            cell.fill = green_fill
+                        elif value == "ROTO":
+                            cell.fill = red_fill
+
+    bio.seek(0)
+    return bio.getvalue()
 
 def _to_excel_reporte_links(df_links: pd.DataFrame) -> bytes:
     """
@@ -1035,8 +1202,15 @@ def _normalize_one_url(
     if not yt_valid:
         return None, yt_reason
 
-    return norm, ""
+    x_valid, x_reason = validate_x_twitter_url(norm)
+    if not x_valid:
+        return None, x_reason
 
+    google_valid, google_reason = validate_google_search_url(norm)
+    if not google_valid:
+        return None, google_reason
+
+    return norm, ""
 
 def _normalize_links(
     series: pd.Series,
@@ -1130,27 +1304,78 @@ def _is_html_like(content_type: Optional[str]) -> bool:
     ct = content_type.lower()
     return "text/html" in ct or "application/xhtml" in ct
 
+def _is_suspicious_redirect_to_root(original_url: str, final_url: str) -> bool:
+    """
+    Detecta el patrón típico de Google Sites en el que una URL profunda
+    de contenido redirige a la raíz del sitio (home). Para el usuario,
+    esto suele significar que la página concreta ya no existe.
+    """
+    try:
+        p0 = urlparse(original_url)
+        pf = urlparse(final_url)
+    except Exception:
+        return False
+
+    domain = (pf.netloc or "").lower()
+
+    # De momento, aplicamos la heurística sólo a Google Sites
+    if "sites.google.com" not in domain:
+        return False
+
+    seg0 = [s for s in (p0.path or "").split("/") if s]
+    segf = [s for s in (pf.path or "").split("/") if s]
+
+    # La URL original debe ser claramente "más profunda"
+    if len(seg0) <= len(segf):
+        return False
+
+    # La ruta final debe ser prefijo de la inicial
+    if seg0[: len(segf)] != segf:
+        return False
+
+    # Consideramos sospechoso cuando se redirige a la raíz o a 'home'
+    #   /site/<sitio>/
+    #   /site/<sitio>/home
+    if len(segf) <= 2:
+        return True
+    if len(segf) == 3 and segf[-1].lower() in {"home", "inicio", "index", "default"}:
+        return True
+
+    return False
+
 
 def _soft_404_detect_v5(body_text: str, url: str) -> Tuple[bool, int]:
     """
-    Detección mejorada de soft-404 con sistema de scoring.
-    Devuelve (es_soft_404, score_soft_404).
+    Detección reforzada de soft-404:
+
+    1) Primero aplica patrones fuertes (SOFT_404_STRONG_RE) que indican
+       claramente que el recurso no existe o no es accesible:
+       - YouTube: "Video no disponible", "Este video es privado", etc.
+       - X: "Esta página no existe. Intenta hacer otra búsqueda."
+       - Otros mensajes típicos de "page not found".
+
+    2) Si no hay patrón fuerte, usa el score heurístico de
+       `_calculate_content_score`. Un score muy negativo se interpreta
+       como soft-404 genérico.
     """
-    # En dominios confiables, solo marcamos soft-404 si hay patrones MUY claros
-    if _is_trusted_domain(url):
-        chunk = body_text[:5000]
-        if re.search(r"\b404\s+error\b|\berror\s+404\b", chunk, re.IGNORECASE):
-            return True, 80
+    if not body_text:
         return False, 0
 
+    # Trozo suficiente para buscar mensajes de error
+    chunk = body_text[:8000]
+
+    # 1) Patrones fuertes → confianza muy alta, en cualquier dominio
+    if SOFT_404_STRONG_RE.search(chunk):
+        return True, 95
+
+    # 2) Score heurístico (penaliza SOFT_404_RE, textos muy cortos, etc.)
     score = _calculate_content_score(body_text, url)
 
-    # Si el score global es muy negativo, lo tratamos como soft-404
+    # Score muy negativo => consideramos soft-404
     if score < -10:
-        return True, abs(score)
+        return True, min(90, abs(score))
 
     return False, 0
-
 
 def _classify_v5(
     url: str,
@@ -1271,11 +1496,31 @@ async def _check_one_url_robust_v5(
     - GET parcial para HTML.
     - User-Agent realista + headers por dominio (aportados por el cliente).
     - Soft-404 con scoring y dominios confiables.
-    - Respeta la clasificación original ACTIVO/ROTO/ERROR/REDIRECT.
+    - Reglas específicas por dominio (SSL, códigos aceptados, Google Sites, etc.).
+    - 🔴 Regla especial: enlaces que contienen 'canvas.utp' se marcan SIEMPRE como ROTO.
     """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 1) HEAD para binarios
+    # 🔴 0) Regla especial Canvas UTP: cualquier enlace que contenga 'canvas.utp'
+    # se marca directamente como ROTO, sin hacer ninguna petición HTTP.
+    # Esto aplica tanto si el enlace está accesible como si no: para el reporte
+    # institucional se consideran rotos por definición.
+    if CANVAS_UTP_KEYWORD in url.lower():
+        return {
+            "Link": url,
+            "Status": "ROTO",
+            "HTTP_Code": None,  # No se consulta HTTP
+            "Detalle": "Dominio canvas.utp marcado como ROTO por regla institucional UTP",
+            "Content_Type": "",
+            "Redirected": "No",
+            "Timestamp": now_str,
+            "Final_URL": url,
+            "Redirect_Chain": url,
+            "Soft_404": "No",
+            "Score": -100,
+        }
+
+    # 1) HEAD para binarios (PDF, DOC, etc.)
     if _is_binary_candidate(url):
         attempt = 0
         while attempt <= max(0, retries):
@@ -1435,10 +1680,10 @@ async def _check_one_url_robust_v5(
 
         detail = "OK"
 
-        # Soft-404 con scoring (solo si es HTML)
+        # Soft-404 con scoring (sólo si es HTML)
         if detect_soft_404 and _is_html_like(last_ct):
-            is_soft, conf = _soft_404_detect_v5(text, url)
-            content_score = _calculate_content_score(text, url)
+            is_soft, conf = _soft_404_detect_v5(text, final_url)
+            content_score = _calculate_content_score(text, final_url)
 
             if is_soft:
                 soft_flag = True
@@ -1457,6 +1702,28 @@ async def _check_one_url_robust_v5(
                     "Redirect_Chain": " -> ".join(chain),
                     "Soft_404": "Sí",
                     "Score": content_score,
+                }
+
+        # 🔴 Heurística para redirección sospechosa a la raíz (Google Sites)
+        if redirected and status is not None and status < 400:
+            if _is_suspicious_redirect_to_root(url, final_url):
+                soft_flag = True
+                last_detail = (
+                    "Redirección a la raíz del sitio (home). "
+                    "Probablemente la página específica ya no existe (soft-404 por redirect)."
+                )
+                return {
+                    "Link": url,
+                    "Status": "ROTO",
+                    "HTTP_Code": status,
+                    "Detalle": last_detail,
+                    "Content_Type": last_ct,
+                    "Redirected": "Sí",
+                    "Timestamp": now_str,
+                    "Final_URL": final_url,
+                    "Redirect_Chain": " -> ".join(chain),
+                    "Soft_404": "Sí",
+                    "Score": -25,
                 }
 
         # Si llegamos aquí, lo consideramos válido (ACTIVO / REDIRECT)
@@ -1488,7 +1755,6 @@ async def _check_one_url_robust_v5(
         "Soft_404": "Sí" if soft_flag else "No",
         "Score": content_score,
     }
-
 
 async def _run_link_check_ultra_v5(
     links_with_rows: List[Tuple[int, str]],
@@ -1683,6 +1949,30 @@ def _infer_tipo_problema(row: pd.Series) -> str:
         return "ERROR_DESCONOCIDO"
 
     return ""
+
+def _standardize_status_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normaliza la columna Status según la regla:
+    - REDIRECT → ACTIVO
+    - ERROR / INVALIDO → ROTO
+    Mantiene otros valores (como ACTIVO, ROTO) sin cambios.
+    """
+    if "Status" not in df.columns:
+        return df
+
+    df = df.copy()
+    status_upper = df["Status"].astype(str).str.upper()
+
+    # REDIRECT se considera ACTIVO
+    df.loc[status_upper.str.contains("REDIRECT"), "Status"] = "ACTIVO"
+
+    # ERROR o INVALIDO se consideran ROTO
+    df.loc[
+        status_upper.str.contains("ERROR") | status_upper.str.contains("INVALIDO"),
+        "Status"
+    ] = "ROTO"
+
+    return df
 
 
 # ======================================================
@@ -3509,17 +3799,6 @@ def page_status_link_checker():
                 step=8_192,
             )
 
-    # st.info(
-    #     """
-    #     **Mejoras V5 activas en este módulo:**
-    #     - User-Agent rotativo (Chrome, Firefox, Safari, Edge).
-    #     - Headers específicos para dominios como Facebook, LinkedIn, Canva, etc.
-    #     - Lista blanca de dominios confiables (Canva, Crehana, OpenStax, Coca-Cola…).
-    #     - Detección de soft-404 con sistema de scoring (`Score`).
-    #     - Códigos 400/403/999 tratados como válidos en sitios que lo requieren.
-    #     """
-    # )
-
     progress_bar = st.empty()
     status_text = st.empty()
 
@@ -3635,59 +3914,52 @@ def page_status_link_checker():
             else:
                 df_out = df_out.reset_index(drop=True)
 
-            # 2.4. Tipo_Problema (usa tu helper original)
+            # 2.4. Tipo_Problema
             try:
                 df_out["Tipo_Problema"] = df_out.apply(_infer_tipo_problema, axis=1)
             except Exception:
                 df_out["Tipo_Problema"] = ""
 
-            # 2.5. Preparar DataFrame de exportación (orden de columnas)
+            # 2.5. Estandarizar Status (REDIRECT→ACTIVO, ERROR/INVALIDO→ROTO)
+            df_out = _standardize_status_column(df_out)
+
+            # 2.6. DataFrame de exportación (completo, el recorte se hace en _to_excel_report)
             df_export = df_out.copy()
             if "Nombre del Archivo" in df_export.columns:
                 df_export = df_export.rename(columns={"Nombre del Archivo": "Archivo"})
 
-            col_archivo = "Archivo" if "Archivo" in df_export.columns else None
-            col_pagina = "Página/Diapositiva" if "Página/Diapositiva" in df_export.columns else None
-
-            ordered_cols: List[str] = []
-            if col_archivo:
-                ordered_cols.append(col_archivo)
-            if col_pagina:
-                ordered_cols.append(col_pagina)
-
-            for c in [
-                "Link",
-                "Status",
-                "HTTP_Code",
-                "Detalle",
-                "Score",
-                "Tipo_Problema",
-                "Redirected",
-                "Final_URL",
-            ]:
-                if c in df_export.columns:
-                    ordered_cols.append(c)
-
-            other_cols = [c for c in df_export.columns if c not in ordered_cols]
-            df_export = df_export[ordered_cols + other_cols]
-
-            # Guardar en sesión
             st.session_state.status_result_df = df_out
             st.session_state.status_export_df = df_export
 
             progress_bar.empty()
             status_text.markdown("✅ Validación V5 completada.")
 
-            # Métricas por Status
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("✅ ACTIVOS", int((df_out["Status"] == "ACTIVO").sum()))
-            m2.metric("❌ ROTOS", int((df_out["Status"] == "ROTO").sum()))
-            m3.metric("⚠️ ERROR", int((df_out["Status"] == "ERROR").sum()))
-            m4.metric("🔄 REDIRECT", int((df_out["Status"] == "REDIRECT").sum()))
-            m5.metric("🚫 INVALIDO", int((df_out["Status"] == "INVALIDO").sum()))
+            # === MÉTRICAS SIMPLIFICADAS (solo ACTIVOS y ROTOS) ===
+            col_m1, col_m2 = st.columns(2)
+            col_m1.metric("✅ ACTIVOS", int((df_out["Status"] == "ACTIVO").sum()))
+            col_m2.metric("❌ ROTOS", int((df_out["Status"] == "ROTO").sum()))
 
-            st.dataframe(df_out, use_container_width=True, height=420)
+            # === TABLA PRINCIPAL DE RESULTADOS EN LAYOUT ===
+            # Solo: Nombre del Archivo | Link | Status (en ese orden)
+            df_view = df_out.copy()
 
+            # Aseguramos columna Nombre del Archivo
+            if "Nombre del Archivo" not in df_view.columns and "Archivo" in df_view.columns:
+                df_view = df_view.rename(columns={"Archivo": "Nombre del Archivo"})
+
+            for col in ["Nombre del Archivo", "Link", "Status"]:
+                if col not in df_view.columns:
+                    df_view[col] = ""
+
+            df_view = df_view[["Nombre del Archivo", "Link", "Status"]]
+
+            st.dataframe(
+                _style_status_dataframe(df_view),
+                use_container_width=True,
+                height=420,
+            )
+
+            # === Detalle de enlaces rotos ===
             with st.expander("📊 Enlaces ROTOS (incluye soft-404)", expanded=False):
                 rotos = df_out[df_out["Status"] == "ROTO"]
                 if len(rotos) > 0:
@@ -3738,9 +4010,9 @@ def page_status_link_checker():
         )
     with colD2:
         st.info(
-            "El Excel incluye columnas **Score** y **Tipo_Problema**, "
-            "además de los campos habituales (Status, HTTP_Code, Soft_404, etc.)."
+            "El Excel incluye la hoja **Status** con las columnas solicitadas."
         )
+
 
     ui_card_close()
 
@@ -3799,9 +4071,9 @@ def main():
         render_hero(title=module, subtitle="Módulo no encontrado.", icon="⚠️")
         st.error("Módulo seleccionado no existe.")
 
-
 if __name__ == "__main__":
     main()
+
 
 
 
