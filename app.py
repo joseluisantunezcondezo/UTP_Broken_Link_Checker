@@ -3264,7 +3264,7 @@ def page_extraccion_masiva():
     """Módulo PDF to Word: PDF → Word (acepta PDF sueltos y ZIP con PDFs)."""
     render_hero(
         "PDF to Word Transformation (ZIP)",
-        "Convierte múltiples PDFs a Word filtrando bibliografía y reordenando el texto.",
+        "Convierte múltiples PDFs a Word sin filtrar la bibliografía y reordenando el texto.",
         "🧲",
     )
 
@@ -4073,6 +4073,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
