@@ -79,7 +79,7 @@ logger = logging.getLogger(__name__)
 # CONFIG / CONSTANTES
 # ======================================================
 
-APP_TITLE = "UTP - Broken Link Checker"
+APP_TITLE = "UTP - Broken Link Checke-V3"
 APP_ICON = "🔗"
 
 MODULES = [
@@ -4073,6 +4073,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
