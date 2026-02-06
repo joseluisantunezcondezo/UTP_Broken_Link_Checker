@@ -79,16 +79,15 @@ logger = logging.getLogger(__name__)
 # CONFIG / CONSTANTES
 # ======================================================
 
-APP_TITLE = "UTP - Broken Link Checke-V3"
+APP_TITLE = "UTP - Broken Link Checker"
 APP_ICON = "🔗"
 
 MODULES = [
     "Home",
     "Bulk Download",
-    "PDF to Word",
-    "Report Word Link",
     "Report Broken Link",
 ]
+
 
 DEFAULT_TIMEOUT_S = 15.0
 DEFAULT_CONCURRENCY_GLOBAL = 30
@@ -399,103 +398,6 @@ VALID_CONTENT_PATTERNS = [
     r"twitter:card",
 ]
 VALID_CONTENT_RE = re.compile("|".join(VALID_CONTENT_PATTERNS), re.IGNORECASE)
-
-
-def _calculate_content_score(text: str, url: str) -> int:
-    """Score heurístico para distinguir página real de página de error genérica."""
-    score = 0
-    chunk = text[:5000]
-    content_len = len(text)
-
-    # Bonificación por estructuras típicas de contenido real
-    if VALID_CONTENT_RE.search(chunk):
-        score += 20
-
-    # Bonificación por longitud (las páginas de error suelen ser cortas)
-    if content_len > 10000:
-        score += 15
-    elif content_len > 5000:
-        score += 10
-    elif content_len > 2000:
-        score += 5
-
-    # Dominios confiables (Wikipedia, YouTube, etc.) → normalmente contenido real
-    if _is_trusted_domain(url):
-        score += 25
-
-    # Metadatos típicos de páginas reales
-    head_chunk = text[:2000]
-    if "og:title" in head_chunk or "twitter:title" in head_chunk:
-        score += 10
-
-    # Contenido demasiado corto (páginas de error muy mínimas)
-    if content_len < 500:
-        score -= 10
-
-    return score
-
-
-def _soft_404_detect_v5(body_text: str, url: str) -> Tuple[bool, int]:
-    """
-    Detección reforzada de soft-404:
-    - Primero busca patrones fuertes (YouTube 'Video no disponible',
-      X 'Esta página no existe', etc.).
-    - Si no encuentra patrones fuertes, usa el score heurístico.
-    Devuelve (es_soft_404, nivel_confianza).
-    """
-    chunk = body_text[:8000]
-
-    # 1) Patrones muy específicos → confianza casi total
-    if SOFT_404_STRONG_RE.search(chunk):
-        return True, 95
-
-    # 2) Score heurístico (respaldo, más conservador)
-    score = _calculate_content_score(body_text, url)
-    if score < -10:
-        # score negativo fuerte → consideramos soft-404 de alta confianza
-        return True, min(90, abs(score))
-
-    return False, 0
-
-# ======================================================
-# VALIDACIÓN DE CONTENT-TYPE MEJORADA (V5)
-# ======================================================
-
-def validate_content_type_match(url: str, content_type: str) -> Tuple[bool, str]:
-    """
-    Validación mejorada de Content-Type:
-    - Más permisiva en general.
-    - Solo marca como problema cuando se esperaba un binario (PDF/DOC/etc.)
-      y el servidor devuelve 'text/html' o 'text/plain'.
-    """
-    if not content_type:
-        return True, ""
-
-    try:
-        parsed = urlparse(url)
-        path = parsed.path.lower()
-
-        for ext, expected in EXPECTED_CONTENT_TYPES.items():
-            if path.endswith(ext):
-                ct_clean = content_type.lower().split(";")[0].strip()
-                if ct_clean not in [e.lower() for e in expected]:
-                    # Solo lo tratamos como potencial roto si nos dan HTML/texto
-                    # cuando esperábamos un binario (PDF, DOC, XLS, PPT)
-                    if (
-                        ("text/html" in ct_clean or "text/plain" in ct_clean)
-                        and ext in {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
-                    ):
-                        return False, (
-                            f"Archivo {ext} devuelve {ct_clean} "
-                            f"(esperado {expected[0]})"
-                        )
-                break
-
-        return True, ""
-
-    except Exception:
-        return True, ""
-
 
 # ======================================================
 # HELPERS V5 PARA DOMINIOS / SCORING
@@ -885,6 +787,41 @@ def apply_global_styles():
         }
 
         .stDataFrame { border-radius: 10px; border: 1px solid #e5e7eb; }
+        /* 🔁 Botón de reset justo debajo del hero, visualmente dentro de la franja */
+        .hero-reset-anchor + div[data-testid="stButton"] {
+            margin-top: -3.0rem;         /* lo sube encima del hero */
+            margin-bottom: 0.6rem;
+            display: flex;
+            justify-content: flex-end;   /* alineado a la derecha */
+            padding-right: 2.4rem;       /* mismo padding horizontal del hero */
+        }
+
+        /* Estilo del botón como icono circular rojo */
+        .hero-reset-anchor + div[data-testid="stButton"] > button {
+            position: relative;
+            width: 44px;
+            height: 44px;
+            border-radius: 999px;
+            padding: 0;
+            background-color: #ff1654;   /* rojo parecido al icono adjunto */
+            color: transparent;          /* oculta el texto 'Reiniciar' */
+            box-shadow: 0 12px 28px rgba(15,23,42,0.45);
+        }
+
+        .hero-reset-anchor + div[data-testid="stButton"] > button::before {
+            content: "↻";                /* icono de recarga */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 22px;
+            color: #ffffff;
+        }
+
+        .hero-reset-anchor + div[data-testid="stButton"] > button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 16px 32px rgba(15,23,42,0.55);
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -976,6 +913,48 @@ def _style_status_dataframe(df: pd.DataFrame):
 
     return df.style.applymap(_color_status, subset=["Status"])
 
+def _render_status_summary(df_out: pd.DataFrame):
+    """
+    Muestra:
+    - Métricas de ACTIVOS y ROTOS
+    - Tabla principal (Nombre del Archivo | Link | Status)
+    - Expander con detalle de enlaces ROTO (incluye soft-404)
+    """
+    col_m1, col_m2 = st.columns(2)
+    col_m1.metric("✅ ACTIVOS", int((df_out["Status"] == "ACTIVO").sum()))
+    col_m2.metric("❌ ROTOS", int((df_out["Status"] == "ROTO").sum()))
+
+    df_view = df_out.copy()
+
+    # Asegurar columna Nombre del Archivo
+    if "Nombre del Archivo" not in df_view.columns and "Archivo" in df_view.columns:
+        df_view = df_view.rename(columns={"Archivo": "Nombre del Archivo"})
+
+    for col in ["Nombre del Archivo", "Link", "Status"]:
+        if col not in df_view.columns:
+            df_view[col] = ""
+
+    df_view = df_view[["Nombre del Archivo", "Link", "Status"]]
+
+    st.dataframe(
+        _style_status_dataframe(df_view),
+        use_container_width=True,
+        height=420,
+    )
+
+    with st.expander("📊 Enlaces ROTOS (incluye soft-404)", expanded=False):
+        rotos = df_out[df_out["Status"] == "ROTO"]
+        if len(rotos) > 0:
+            for _, row in rotos.iterrows():
+                emoji = "🔴" if str(row.get("Soft_404", "")).strip().lower() == "sí" else "❌"
+                score_info = f" (Score: {row.get('Score', 0)})"
+                tipo = row.get("Tipo_Problema", "")
+                st.markdown(
+                    f"{emoji} Fila {row['Fila_Excel']}: `{row['Link']}`{score_info} → "
+                    f"{row['Detalle']} ({tipo})"
+                )
+        else:
+            st.success("No se detectaron enlaces con Status = ROTO.")
 
 # ======= gestión robusta de módulo seleccionado =======================
 
@@ -1007,6 +986,58 @@ def init_session_state():
 
     # Estado para Reporte Link (Word)
     st.session_state.setdefault("reporte_links_df", None)
+
+    # 🔄 Estado del pipeline unificado "Report Broken Link"
+    st.session_state.setdefault("pipeline_pdf_signature", None)
+    st.session_state.setdefault("pipeline_pdf_done", False)
+    st.session_state.setdefault("pipeline_pdf_results", None)
+    st.session_state.setdefault("pipeline_pdf_errors", None)
+
+    st.session_state.setdefault("pipeline_word_docs", None)
+    st.session_state.setdefault("pipeline_word_done", False)
+    st.session_state.setdefault("pipeline_df_links", None)
+    st.session_state.setdefault("pipeline_word_errors", None)
+
+    st.session_state.setdefault("pipeline_status_done", False)
+
+    # 🔁 Token para poder “reiniciar” el módulo unificado
+    st.session_state.setdefault("pipeline_reset_token", 0)
+
+def reset_report_broken_pipeline():
+    """
+    Limpia todo el estado relacionado al módulo unificado 'Report Broken Link'
+    y fuerza que los widgets vuelvan a su estado inicial.
+    """
+    keys_to_clear = [
+        "pipeline_pdf_signature",
+        "pipeline_pdf_done",
+        "pipeline_pdf_results",
+        "pipeline_pdf_errors",
+        "pipeline_word_docs",
+        "pipeline_word_done",
+        "pipeline_df_links",
+        "pipeline_word_errors",
+        "pipeline_status_done",
+        "extraccion_resultados",
+        "extraccion_errores",
+        "extraccion_zip_bytes",
+        "reporte_links_df",
+        "status_input_filename",
+        "status_input_df",
+        "status_links_list",
+        "status_cache",
+        "status_result_df",
+        "status_invalid_df",
+        "status_export_df",
+    ]
+
+    for k in keys_to_clear:
+        st.session_state.pop(k, None)
+
+    # Cambiar el token para que los widgets (file_uploader) se “reseteen”
+    st.session_state["pipeline_reset_token"] = st.session_state.get(
+        "pipeline_reset_token", 0
+    ) + 1
 
 
 def on_change_module():
@@ -1247,15 +1278,6 @@ def _normalize_links(
 
 
 # ======================================================
-# DETECCIÓN DE URLS EN DOCUMENTOS WORD
-# ======================================================
-
-DOCX_URL_RE = re.compile(
-    r"\b(?:https?://|www\.|mailto:|tel:)[^\s<>()\"']+",
-    re.IGNORECASE,
-)
-
-# ======================================================
 # LINK CHECKER ULTRA ROBUSTO V4
 # ======================================================
 
@@ -1271,19 +1293,6 @@ def _requests_available_or_warn() -> bool:
         st.error("Falta la librería `requests`. Instala con: `pip install requests`")
         return False
     return True
-
-
-def _build_headers() -> Dict[str, str]:
-    return {
-        "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "es-PE,es;q=0.9,en;q=0.8",
-        "accept-encoding": "gzip, deflate, br",
-    }
 
 
 # ======================================================
@@ -3264,7 +3273,7 @@ def page_extraccion_masiva():
     """Módulo PDF to Word: PDF → Word (acepta PDF sueltos y ZIP con PDFs)."""
     render_hero(
         "PDF to Word Transformation (ZIP)",
-        "Convierte múltiples PDFs a Word sin filtrar la bibliografía y reordenando el texto.",
+        "Convierte múltiples PDFs a Word sin filtrar bibliografía y reordenando el texto."
         "🧲",
     )
 
@@ -4008,13 +4017,692 @@ def page_status_link_checker():
             file_name=out_xlsx,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-    with colD2:
-        st.info(
-            "El Excel incluye la hoja **Status** con las columnas solicitadas."
-        )
+    # with colD2:
+    #     st.info(
+    #         "El Excel incluye la hoja **Status** con las columnas solicitadas."
+    #     )
 
 
     ui_card_close()
+
+def page_report_broken_unificado():
+    """
+    Módulo unificado Report Broken Link:
+    1) PDF → Word
+    2) Word → Excel de links
+    3) Excel → Validación de links
+    Todo en una sola pantalla, con flujo automático.
+    """
+
+    # ======================================================
+    # 3.1 PDF to Word Transformation (ZIP) + botón Reiniciar
+    #    → La franja ocupa todo el ancho y el botón queda alineado a la derecha
+    # ======================================================
+    render_hero(
+        "PDF to Word Transformation (ZIP)",
+        "Convierte múltiples PDFs a Word sin filtrar bibliografía y reordenando el texto.",
+        "🧲",
+    )
+
+    # Ancla para que el botón siguiente se “meta” dentro del hero vía CSS
+    st.markdown('<div class="hero-reset-anchor"></div>', unsafe_allow_html=True)
+
+    # Botón de reset (el CSS lo convierte en icono y lo coloca en la franja)
+    if st.button("Reiniciar", key="btn_reset_report_broken"):
+        reset_report_broken_pipeline()
+        try:
+            st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
+
+    ui_card_open()
+    step1_ph = st.empty()
+
+    # Clave dinámica para poder limpiar el file_uploader al reiniciar
+    uploader_key = f"pipeline_pdf_uploader_ultra_{st.session_state.get('pipeline_reset_token', 0)}"
+
+    uploaded_files = st.file_uploader(
+        "Selecciona uno o más archivos PDF o ZIP (ZIP con PDFs en su interior)",
+        type=["pdf", "zip"],
+        accept_multiple_files=True,
+        key=uploader_key,
+        help="Puedes arrastrar varios PDFs o ZIP con PDFs.",
+    )
+
+    all_pdfs: List[Any] = []
+
+    if uploaded_files:
+        for f in uploaded_files:
+            fname_lower = f.name.lower()
+
+            # PDF directo
+            if fname_lower.endswith(".pdf"):
+                all_pdfs.append(f)
+
+            # ZIP con PDFs dentro
+            elif fname_lower.endswith(".zip"):
+                try:
+                    zdata = io.BytesIO(f.getbuffer())
+                    with zipfile.ZipFile(zdata, "r") as zf:
+                        for info in zf.infolist():
+                            if info.is_dir():
+                                continue
+                            if not info.filename.lower().endswith(".pdf"):
+                                continue
+
+                            pdf_bytes = zf.read(info)
+                            inner_name = Path(info.filename).name
+                            safe_name = f"{Path(f.name).stem}_{inner_name}"
+                            all_pdfs.append(InMemoryUploadedPDF(safe_name, pdf_bytes))
+                except Exception as e:
+                    st.warning(f"No se pudo leer el ZIP `{f.name}`: {e}")
+
+    has_pdfs = len(all_pdfs) > 0
+
+    step1_ph.markdown(
+        render_step_header_html(
+            "1",  # ✅ Paso 1
+            "Agregar PDF's (directos o desde ZIP)",
+            "ok" if has_pdfs else "warn",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if not has_pdfs:
+        st.caption("Agrega al menos un PDF (directo o dentro de un ZIP) para continuar.")
+        ui_card_close()
+    else:
+        # Detectar cambio en los archivos subidos para resetear pipeline
+        try:
+            signature = sorted(
+                (f.name, len(f.getbuffer())) for f in all_pdfs  # type: ignore[attr-defined]
+            )
+        except Exception:
+            signature = sorted((f.name, 0) for f in all_pdfs)
+
+        prev_sig = st.session_state.get("pipeline_pdf_signature")
+        if prev_sig != signature:
+            st.session_state["pipeline_pdf_signature"] = signature
+            st.session_state["pipeline_pdf_done"] = False
+            st.session_state["pipeline_word_done"] = False
+            st.session_state["pipeline_status_done"] = False
+            st.session_state["pipeline_pdf_results"] = None
+            st.session_state["pipeline_pdf_errors"] = None
+            st.session_state["pipeline_word_docs"] = None
+            st.session_state["pipeline_df_links"] = None
+            st.session_state["pipeline_word_errors"] = None
+            st.session_state["status_result_df"] = None
+            st.session_state["status_export_df"] = None
+            st.session_state["status_invalid_df"] = None
+
+        # 3.4 Procesar todos los PDF's
+        render_simple_step_header("2", "Procesar todos los PDF's")  # ✅ Paso 2
+
+        progress_bar = st.empty()
+        status_text = st.empty()
+
+        auto_trigger = not st.session_state.get("pipeline_pdf_done", False)
+        manual_click = st.button(
+            "🚀 Procesar todos los PDF's",
+            type="primary",
+            key="pipeline_btn_pdf_process",
+        )
+
+        if auto_trigger or manual_click:
+            if fitz is None or Document is None:
+                st.error(
+                    "Faltan dependencias para este paso.\n\n"
+                    "- Instala `pymupdf` (fitz)\n"
+                    "- Instala `python-docx`"
+                )
+            else:
+                try:
+                    progress_bar.progress(0.0)
+                    status_text.markdown("Iniciando procesamiento de PDFs...")
+
+                    with st.spinner("Extrayendo texto y generando archivos Word..."):
+                        resultados, errores, zip_bytes = _run_pdf_extraction_streamlit(
+                            all_pdfs,
+                            usar_multihilo=True,
+                            max_workers=4,
+                            progress_bar=progress_bar,
+                            status_text=status_text,
+                        )
+
+                    # Guardar en session_state (compatibilidad y pipeline)
+                    st.session_state["pipeline_pdf_results"] = resultados
+                    st.session_state["pipeline_pdf_errors"] = errores
+                    st.session_state["extraccion_resultados"] = resultados
+                    st.session_state["extraccion_errores"] = errores
+                    st.session_state["extraccion_zip_bytes"] = zip_bytes
+
+                    # Construir DOCX en memoria para siguiente paso
+                    word_docs: List[InMemoryUploadedDOCX] = []
+                    for r in resultados:
+                        out_path = r.get("output")
+                        if not out_path:
+                            continue
+                        try:
+                            if os.path.exists(out_path):
+                                with open(out_path, "rb") as fh:
+                                    data = fh.read()
+                                word_docs.append(
+                                    InMemoryUploadedDOCX(Path(out_path).name, data)
+                                )
+                        except Exception as e:
+                            logger.error(f"Error leyendo DOCX generado '{out_path}': {e}")
+
+                    st.session_state["pipeline_word_docs"] = word_docs
+                    st.session_state["pipeline_pdf_done"] = True
+
+                    progress_bar.empty()
+                    status_text.markdown("✅ Procesamiento de PDFs completado.")
+
+                    total_ok = len(resultados)
+                    total_err = len(errores)
+                    total_files = total_ok + total_err
+                    total_pag = sum(
+                        r.get("stats", {}).get("paginas_procesadas", 0)
+                        for r in resultados
+                        if r.get("stats")
+                    )
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Archivos procesados", total_files)
+                    m2.metric("Completados", total_ok)
+                    m3.metric("Errores", total_err)
+
+                    if total_pag:
+                        st.caption(f"Páginas totales procesadas: **{total_pag}**")
+
+                    with st.expander("📊 Detalle de procesamiento de PDFs", expanded=False):
+                        filas = []
+                        for r in resultados:
+                            filas.append(
+                                {
+                                    "Archivo": Path(r.get("file", "")).name,
+                                    "Páginas": r.get("stats", {}).get("paginas_procesadas", 0),
+                                    "Estado": "COMPLETADO",
+                                    "Salida (Word)": Path(r.get("output", "")).name,
+                                }
+                            )
+                        for e in errores:
+                            filas.append(
+                                {
+                                    "Archivo": Path(e.get("file", "")).name,
+                                    "Páginas": None,
+                                    "Estado": "ERROR",
+                                    "Salida (Word)": "",
+                                }
+                            )
+                        if filas:
+                            df_res = pd.DataFrame(filas)
+                            st.dataframe(df_res, use_container_width=True, height=300)
+                        else:
+                            st.write("No hay resultados para mostrar.")
+
+                except Exception as e:
+                    progress_bar.empty()
+                    status_text.empty()
+                    st.error(f"Ocurrió un error durante el procesamiento de PDFs: {e}")
+        else:
+            # Ya procesado: mostrar resumen sin reprocesar
+            resultados = st.session_state.get("pipeline_pdf_results") or []
+            errores = st.session_state.get("pipeline_pdf_errors") or []
+            if resultados or errores:
+                total_ok = len(resultados)
+                total_err = len(errores)
+                total_files = total_ok + total_err
+                total_pag = sum(
+                    r.get("stats", {}).get("paginas_procesadas", 0)
+                    for r in resultados
+                    if r.get("stats")
+                )
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Archivos procesados", total_files)
+                m2.metric("Completados", total_ok)
+                m3.metric("Errores", total_err)
+
+                if total_pag:
+                    st.caption(f"Páginas totales procesadas: **{total_pag}**")
+
+                with st.expander("📊 Detalle de procesamiento de PDFs", expanded=False):
+                    filas = []
+                    for r in resultados:
+                        filas.append(
+                            {
+                                "Archivo": Path(r.get("file", "")).name,
+                                "Páginas": r.get("stats", {}).get("paginas_procesadas", 0),
+                                "Estado": "COMPLETADO",
+                                "Salida (Word)": Path(r.get("output", "")).name,
+                            }
+                        )
+                    for e in errores:
+                        filas.append(
+                            {
+                                "Archivo": Path(e.get("file", "")).name,
+                                "Páginas": None,
+                                "Estado": "ERROR",
+                                "Salida (Word)": "",
+                            }
+                        )
+                    if filas:
+                        df_res = pd.DataFrame(filas)
+                        st.dataframe(df_res, use_container_width=True, height=300)
+                    else:
+                        st.write("No hay resultados para mostrar.")
+            else:
+                st.info("Cuando subas PDFs el procesamiento se ejecutará automáticamente.")
+
+        ui_card_close()
+
+    # ======================================================
+    # 3.6 Report Word Link (Excel) – Word → links
+    # ======================================================
+    render_hero(
+        "Report Word Link (Excel)",
+        "Genera un Excel con todos los Links detectados en documentos Word.",
+        "📊",
+    )
+
+    ui_card_open()
+
+    docs = st.session_state.get("pipeline_word_docs") or []
+    step_word1 = st.empty()
+    step_word1.markdown(
+        render_step_header_html(
+            "3",  # ✅ Paso 3
+            "Agregar documentos Word's (directos o desde ZIP)",
+            "ok" if docs else "warn",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if not docs:
+        st.caption(
+            "Los documentos Word se generan automáticamente a partir de los PDFs del paso anterior."
+        )
+        ui_card_close()
+    else:
+        # Sin numeración en el expander para evitar romper la secuencia global
+        with st.expander("Documentos Word generados", expanded=False):
+            df_files = _build_word_file_table(docs)
+            st.dataframe(df_files, use_container_width=True, height=260)
+
+        render_simple_step_header("4", "Procesar todos los documentos Word's")  # ✅ Paso 4
+
+        progress_bar_word = st.empty()
+        status_text_word = st.empty()
+
+        auto_trigger_word = not st.session_state.get("pipeline_word_done", False)
+        manual_click_word = st.button(
+            "🚀 Procesar todos los documentos Word's",
+            type="primary",
+            key="pipeline_btn_word_process",
+        )
+
+        if auto_trigger_word or manual_click_word:
+            try:
+                progress_bar_word.progress(0.0)
+                status_text_word.markdown("Iniciando análisis de documentos Word...")
+
+                with st.spinner("Buscando enlaces dentro de los documentos Word..."):
+                    df_links, errores = _run_word_link_report_streamlit(
+                        docs,
+                        progress_bar=progress_bar_word,
+                        status_text=status_text_word,
+                    )
+
+                st.session_state["pipeline_df_links"] = df_links
+                st.session_state["reporte_links_df"] = df_links
+                st.session_state["pipeline_word_errors"] = errores
+                st.session_state["pipeline_word_done"] = True
+
+                progress_bar_word.empty()
+                status_text_word.markdown("✅ Análisis de documentos Word completado.")
+
+                total_docs = len(docs)
+                total_links = len(df_links)
+                docs_con_links = (
+                    df_links["Nombre del Archivo"].nunique()
+                    if not df_links.empty
+                    else 0
+                )
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Documentos analizados", total_docs)
+                m2.metric("Documentos con links", docs_con_links)
+                m3.metric("Links detectados", total_links)
+
+                with st.expander("📊 Detalle de links detectados", expanded=False):
+                    if not df_links.empty:
+                        st.dataframe(df_links, use_container_width=True, height=320)
+                    else:
+                        st.write("No se detectaron links en los documentos analizados.")
+
+                if errores:
+                    with st.expander("⚠️ Errores al procesar algunos documentos", expanded=False):
+                        df_err = pd.DataFrame(errores)
+                        st.dataframe(df_err, use_container_width=True, height=220)
+
+            except Exception as e:
+                progress_bar_word.empty()
+                status_text_word.empty()
+                st.error(f"Ocurrió un error durante el análisis de documentos Word: {e}")
+        else:
+            df_links = st.session_state.get("pipeline_df_links")
+            if df_links is not None:
+                total_docs = len(docs)
+                total_links = len(df_links)
+                docs_con_links = (
+                    df_links["Nombre del Archivo"].nunique()
+                    if not df_links.empty
+                    else 0
+                )
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Documentos analizados", total_docs)
+                m2.metric("Documentos con links", docs_con_links)
+                m3.metric("Links detectados", total_links)
+
+                with st.expander("📊 Detalle de links detectados", expanded=False):
+                    if not df_links.empty:
+                        st.dataframe(df_links, use_container_width=True, height=320)
+                    else:
+                        st.write("No se detectaron links en los documentos analizados.")
+            else:
+                st.info("Cuando termine el análisis de Word se mostrará aquí el resumen de links.")
+
+        ui_card_close()
+
+    # ======================================================
+    # 3.10 Report Broken Link (Excel) – Validación
+    # ======================================================
+    render_hero(
+        "Report Broken Link (Excel)",
+        "Comprueba automáticamente si los Links de tu reporte Excel están activos o rotos.",
+        "🧭",
+    )
+
+    # 3.11 / 3.12: Cargar reporte (desde el paso anterior) + Detalle de Links
+    ui_card_open()
+    step_excel1 = st.empty()
+    df_links = st.session_state.get("pipeline_df_links")
+
+    has_links = df_links is not None and not df_links.empty
+
+    step_excel1.markdown(
+        render_step_header_html(
+            "5",  # ✅ Paso 5
+            "Cargar Archivo Excel - Reporte Link",
+            "ok" if has_links else "warn",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if not has_links:
+        st.caption(
+            "Primero procesa los documentos Word en el paso anterior para generar el reporte de links."
+        )
+        ui_card_close()
+        return
+
+    df_in = df_links.copy()
+    df_in["Fila_Excel"] = range(2, 2 + len(df_in))
+
+    # Parametrizaciones internas (no se muestran)
+    default_scheme = "https"
+    allow_mailto = False
+    allow_tel = False
+    allow_anchor = False
+
+    links_with_rows, df_invalid = _normalize_links(
+        df_in["Links"],
+        allow_mailto=allow_mailto,
+        allow_tel=allow_tel,
+        allow_anchors_only=allow_anchor,
+        default_scheme=default_scheme,
+    )
+
+    # Estado para el motor de validación
+    st.session_state.status_input_filename = "Reporte_Link_Automatizado"
+    st.session_state.status_input_df = df_in
+    st.session_state.status_links_list = links_with_rows
+    st.session_state.status_result_df = None
+    st.session_state.status_invalid_df = df_invalid
+    st.session_state.status_export_df = None
+
+    with st.expander("Detalle de Links", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Links válidos", f"{len(links_with_rows)}")
+        c2.metric("Total filas", f"{len(df_in)}")
+        c3.metric("Descartados", f"{len(df_invalid)}")
+
+    if not df_invalid.empty:
+        with st.expander("⚠️ Links descartados (Status = INVALIDO)", expanded=False):
+            st.dataframe(df_invalid, use_container_width=True, height=220)
+
+    ui_card_close()
+
+    # 3.13 / 3.14 / 3.15 / 3.16: Procesar Reporte Link
+    ui_card_open()
+    render_simple_step_header("6", "Procesar Reporte Link")  # ✅ Paso 6
+
+    if not _httpx_available_or_warn():
+        ui_card_close()
+        return
+
+    if len(links_with_rows) == 0 and df_invalid.empty:
+        st.warning("No hay links para procesar (ni válidos ni descartados).")
+        ui_card_close()
+        return
+
+    # Configuración de validación oculta (se usan valores por defecto)
+    concurrency_global = DEFAULT_CONCURRENCY_GLOBAL
+    concurrency_per_host = DEFAULT_CONCURRENCY_PER_HOST
+    timeout_s = DEFAULT_TIMEOUT_S
+    retries = DEFAULT_RETRIES
+    detect_soft_404 = True
+    verify_ssl = True
+    max_bytes = DEFAULT_MAX_BYTES
+    range_bytes = DEFAULT_RANGE_BYTES
+
+    progress_bar = st.empty()
+    status_text = st.empty()
+
+    def progress_cb(done: int, total: int, current_url: str, current_status: str):
+        pct = done / max(1, total)
+        progress_bar.progress(pct)
+        show = current_url if len(current_url) <= 85 else ("…" + current_url[-82:])
+        status_text.markdown(
+            f"Validando **{done}/{total}** · `{show}` · **{current_status}**"
+        )
+
+    should_run = False
+    if not st.session_state.get("pipeline_status_done", False):
+        should_run = True
+
+    if st.button("🚀 Iniciar validación", type="primary", key="pipeline_btn_status_process"):
+        should_run = True
+        st.session_state["pipeline_status_done"] = False
+
+    df_out: Optional[pd.DataFrame] = None
+
+    if should_run:
+        try:
+            progress_bar.progress(0.0)
+            status_text.markdown("Iniciando verificación con motor V5...")
+
+            # Validación de links
+            if len(links_with_rows) > 0:
+                with st.spinner(
+                    "Validando enlaces (scoring, dominios especiales, soft-404 mejorado)..."
+                ):
+                    results = run_async(
+                        _run_link_check_ultra_v5(
+                            links_with_rows,
+                            timeout_s=float(timeout_s),
+                            concurrency_global=int(concurrency_global),
+                            concurrency_per_host=int(concurrency_per_host),
+                            detect_soft_404=bool(detect_soft_404),
+                            retries=int(retries),
+                            verify_ssl=bool(verify_ssl),
+                            max_bytes=int(max_bytes),
+                            range_bytes=int(range_bytes),
+                            progress_callback=progress_cb,
+                        )
+                    )
+                df_out = pd.DataFrame(results)
+            else:
+                df_out = pd.DataFrame(
+                    columns=[
+                        "Link",
+                        "Status",
+                        "HTTP_Code",
+                        "Detalle",
+                        "Content_Type",
+                        "Redirected",
+                        "Timestamp",
+                        "Final_URL",
+                        "Redirect_Chain",
+                        "Soft_404",
+                        "Score",
+                        "Fila_Excel",
+                    ]
+                )
+
+            # Links inválidos → Status=INVALIDO
+            df_invalid_ready: Optional[pd.DataFrame] = st.session_state.get("status_invalid_df")
+            if df_invalid_ready is not None and not df_invalid_ready.empty:
+                now_str_invalid = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                invalid_rows: List[Dict[str, Any]] = []
+                for _, inv in df_invalid_ready.iterrows():
+                    invalid_rows.append(
+                        {
+                            "Link": inv["Valor"],
+                            "Status": "INVALIDO",
+                            "HTTP_Code": None,
+                            "Detalle": inv["Motivo"],
+                            "Content_Type": "",
+                            "Redirected": "No",
+                            "Timestamp": now_str_invalid,
+                            "Final_URL": inv["Valor"],
+                            "Redirect_Chain": inv["Valor"],
+                            "Soft_404": "No",
+                            "Score": -100,
+                            "Fila_Excel": inv["Fila_Excel"],
+                        }
+                    )
+
+                df_invalid_status = pd.DataFrame(
+                    invalid_rows,
+                    columns=[
+                        "Link",
+                        "Status",
+                        "HTTP_Code",
+                        "Detalle",
+                        "Content_Type",
+                        "Redirected",
+                        "Timestamp",
+                        "Final_URL",
+                        "Redirect_Chain",
+                        "Soft_404",
+                        "Score",
+                        "Fila_Excel",
+                    ],
+                )
+
+                df_out = pd.concat([df_out, df_invalid_status], ignore_index=True, sort=False)
+
+            # Metadatos (Archivo, Página/Diapositiva)
+            df_src = df_in.copy()
+            meta_cols: List[str] = []
+            if "Nombre del Archivo" in df_src.columns:
+                meta_cols.append("Nombre del Archivo")
+            if "Página/Diapositiva" in df_src.columns:
+                meta_cols.append("Página/Diapositiva")
+
+            if meta_cols:
+                df_meta = df_src[["Fila_Excel"] + meta_cols]
+                df_out = df_out.merge(df_meta, on="Fila_Excel", how="left")
+
+            if "Fila_Excel" in df_out.columns:
+                df_out = df_out.sort_values(["Fila_Excel", "Status"]).reset_index(drop=True)
+            else:
+                df_out = df_out.reset_index(drop=True)
+
+            # Tipo_Problema
+            try:
+                df_out["Tipo_Problema"] = df_out.apply(_infer_tipo_problema, axis=1)
+            except Exception:
+                df_out["Tipo_Problema"] = ""
+
+            # Estandarizar Status (REDIRECT→ACTIVO, ERROR/INVALIDO→ROTO)
+            df_out = _standardize_status_column(df_out)
+
+            # DataFrame de exportación
+            df_export = df_out.copy()
+            if "Nombre del Archivo" in df_export.columns:
+                df_export = df_export.rename(columns={"Nombre del Archivo": "Archivo"})
+
+            st.session_state.status_result_df = df_out
+            st.session_state.status_export_df = df_export
+
+            progress_bar.empty()
+            status_text.markdown("✅ Validación V5 completada.")
+            st.session_state["pipeline_status_done"] = True
+
+            if df_out is not None and not df_out.empty:
+                _render_status_summary(df_out)
+            else:
+                st.info("No se produjeron resultados para mostrar.")
+
+        except Exception as e:
+            progress_bar.empty()
+            status_text.empty()
+            st.error(f"Ocurrió un error durante la validación: {e}")
+    else:
+        df_out = st.session_state.get("status_result_df")
+        if df_out is not None and not df_out.empty:
+            _render_status_summary(df_out)
+        else:
+            st.info("Aún no se ha ejecutado la validación de links.")
+
+    ui_card_close()
+
+    # 3.17 Descargar Status Reporte (Excel)
+    ui_card_open()
+    render_simple_step_header("7", "Descargar Status Reporte (Excel)")  # ✅ Paso 7
+
+    df_ready: Optional[pd.DataFrame] = st.session_state.get("status_export_df")
+    if df_ready is None:
+        df_ready = st.session_state.get("status_result_df")
+
+    if df_ready is None or df_ready.empty:
+        st.warning("Primero ejecuta el paso 6 para generar el status.")
+        ui_card_close()
+        return
+
+    file_base = Path(st.session_state.status_input_filename or "reporte_link").stem
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_xlsx = f"{file_base}_STATUS_ULTRA_V5_{ts}.xlsx"
+
+    excel_bytes = _to_excel_report(df_ready)
+
+    colD1, colD2 = st.columns([1, 3])
+    with colD1:
+        st.download_button(
+            "⬇️ Descargar Excel Status",
+            data=excel_bytes,
+            file_name=out_xlsx,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    # with colD2:
+    #     st.info("El Excel incluye la hoja **Status** con las columnas solicitadas.")
+
+    ui_card_close()
+
 
 # ======================================================
 # MAIN
@@ -4061,18 +4749,16 @@ def main():
         page_home()
     elif module == "Bulk Download":
         page_descarga_masiva()
-    elif module == "PDF to Word":
-        page_extraccion_masiva()
-    elif module == "Report Word Link":
-        page_reporte_link()
     elif module == "Report Broken Link":
-        page_status_link_checker()
+        page_report_broken_unificado()
     else:
         render_hero(title=module, subtitle="Módulo no encontrado.", icon="⚠️")
         st.error("Módulo seleccionado no existe.")
 
+
 if __name__ == "__main__":
     main()
+
 
 
 
