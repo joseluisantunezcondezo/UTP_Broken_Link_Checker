@@ -1,16 +1,3 @@
-# utp_broken_link_checker_ultra_v4_pdf_extr_descarga.py
-#
-# UTP - Broken Link Checker (Streamlit) - VERSIÓN ULTRA ROBUSTA V4
-# + PDF to Word Transform PDF→Word
-# + Descarga Masiva de documentos (PDF, PPT, Word)
-# ==================================================================
-# Requisitos extra:
-#   pip install pymupdf python-docx requests
-#
-# Ejecutar:def validate_x_twitter_url(url: str) -> Tuple[bool, str]:
-
-#   streamlit run utp_broken_link_checker_ultra_v4_pdf_extr_descarga.py
-
 from __future__ import annotations
 
 import os
@@ -84,9 +71,9 @@ APP_ICON = "🔗"
 
 MODULES = [
     "Home",
-    "Bulk Download",
-    "Report Broken Link",
+    "Report Broken Link",  # Solo 2 módulos
 ]
+
 
 
 DEFAULT_TIMEOUT_S = 15.0
@@ -1006,22 +993,41 @@ def init_session_state():
 def reset_report_broken_pipeline():
     """
     Limpia todo el estado relacionado al módulo unificado 'Report Broken Link'
-    y fuerza que los widgets vuelvan a su estado inicial.
+    y fuerza que los widgets vuelvan a su estado inicial (como si se entrara
+    por primera vez al módulo).
     """
     keys_to_clear = [
+        # 🔹 1) Excel de Descarga Masiva (pasos 1–3)
+        "pipeline_bulk_signature",
+        "pipeline_bulk_done",
+        "bulk_has_valid_urls",
+        "bulk_urls_archivos",
+        "descarga_resultados",
+        "descarga_fallidos",
+        "descarga_zip_bytes",
+
+        # 🔹 2) PDF → Word (pasos 4–5)
         "pipeline_pdf_signature",
         "pipeline_pdf_done",
         "pipeline_pdf_results",
         "pipeline_pdf_errors",
+        "extraccion_resultados",
+        "extraccion_errores",
+        "extraccion_zip_bytes",
+
+        # Opciones de procesamiento de PDFs
+        "extr_usar_multihilo",
+        "extr_max_workers",
+
+        # 🔹 3) Word → Links (pasos 6–7)
         "pipeline_word_docs",
         "pipeline_word_done",
         "pipeline_df_links",
         "pipeline_word_errors",
-        "pipeline_status_done",
-        "extraccion_resultados",
-        "extraccion_errores",
-        "extraccion_zip_bytes",
         "reporte_links_df",
+
+        # 🔹 4) Report Broken Link (validación de links, pasos 8–9)
+        "pipeline_status_done",
         "status_input_filename",
         "status_input_df",
         "status_links_list",
@@ -1034,11 +1040,10 @@ def reset_report_broken_pipeline():
     for k in keys_to_clear:
         st.session_state.pop(k, None)
 
-    # Cambiar el token para que los widgets (file_uploader) se “reseteen”
+    # 🔁 Token para que file_uploader de Excel y PDF/ZIP se reinicien
     st.session_state["pipeline_reset_token"] = st.session_state.get(
         "pipeline_reset_token", 0
     ) + 1
-
 
 def on_change_module():
     st.session_state["module"] = st.session_state["module_radio"]
@@ -1051,7 +1056,7 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
     """
     Genera el Excel final SOLO con la hoja 'Status', con las columnas:
 
-      Archivo | Página/Diapositiva | Link | Status | HTTP_Code | Detalle | Tipo_Problema
+      name | Archivo | Página/Diapositiva | Link | Status | HTTP_Code | Detalle | Tipo_Problema | link_class
 
     Además, pinta la columna Status (ACTIVO=verde, ROTO=rojo).
     """
@@ -1068,15 +1073,26 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
     if "Nombre del Archivo" in df_detalle.columns and "Archivo" not in df_detalle.columns:
         df_detalle = df_detalle.rename(columns={"Nombre del Archivo": "Archivo"})
 
+    # Columnas objetivo en el orden requerido
+    columnas_objetivo = [
+        "name",
+        "Archivo",
+        "Página/Diapositiva",
+        "Link",
+        "Status",
+        "HTTP_Code",
+        "Detalle",
+        "Tipo_Problema",
+        "link_class",
+    ]
+
     # Crear columnas faltantes si no existen
-    for col in ["Archivo", "Página/Diapositiva", "Link", "Status", "HTTP_Code", "Detalle", "Tipo_Problema"]:
+    for col in columnas_objetivo:
         if col not in df_detalle.columns:
             df_detalle[col] = ""
 
     # Reordenar columnas exactamente como se requiere
-    df_detalle = df_detalle[
-        ["Archivo", "Página/Diapositiva", "Link", "Status", "HTTP_Code", "Detalle", "Tipo_Problema"]
-    ]
+    df_detalle = df_detalle[columnas_objetivo]
 
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
@@ -1116,6 +1132,7 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
 
     bio.seek(0)
     return bio.getvalue()
+
 
 def _to_excel_reporte_links(df_links: pd.DataFrame) -> bytes:
     """
@@ -1983,6 +2000,12 @@ def _standardize_status_column(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+# Prefijo automático generado por el módulo Descarga Masiva:
+# Descarga_Masiva_Documentos_YYYYMMDD_HHMMSS_<nombre_original>.pdf
+DESCARGA_PREFIX_RE = re.compile(
+    r"^Descarga_Masiva_Documentos_\d{8}_\d{6}_",
+    re.IGNORECASE,
+)
 
 # ======================================================
 # PDF to Word Transform - PDF → WORD (LÓGICA DEL EXTRACTOR)
@@ -2601,17 +2624,19 @@ def _run_descarga_masiva_streamlit(
 # ------------------------------------------------------
 class InMemoryUploadedPDF:
     """
-    Pequeño wrapper para tratar PDFs extraídos de un ZIP como si fueran
-    `UploadedFile` de Streamlit (expone .name y .getbuffer()).
+    Pequeño wrapper para tratar PDFs extraídos de un ZIP o descargados en lote
+    como si fueran `UploadedFile` de Streamlit.
+
+    Además guarda, opcionalmente, la URL origen (`source_url`) del documento
+    para poder enlazar luego con el Excel de contenidos (name, link_class).
     """
 
-    def __init__(self, name: str, data: bytes):
+    def __init__(self, name: str, data: bytes, source_url: Optional[str] = None):
         self.name = name
         self._data = data
+        self.source_url = source_url
 
     def getbuffer(self):
-        # UploadedFile.getbuffer() devuelve un buffer tipo bytes/memoryview;
-        # aquí simplemente devolvemos los bytes en memoria.
         return self._data
 
 
@@ -2620,16 +2645,21 @@ class InMemoryUploadedPDF:
 # ------------------------------------------------------
 class InMemoryUploadedDOCX:
     """
-    Wrapper para tratar DOCX extraídos de un ZIP como si fueran
-    `UploadedFile` de Streamlit (expone .name y .getbuffer()).
+    Wrapper para tratar DOCX generados desde PDF o extraídos de ZIP como si fueran
+    `UploadedFile` de Streamlit.
+
+    También guarda (opcionalmente) la `source_url` del PDF original, cuando proviene
+    de la Descarga Masiva.
     """
 
-    def __init__(self, name: str, data: bytes):
+    def __init__(self, name: str, data: bytes, source_url: Optional[str] = None):
         self.name = name
         self._data = data
+        self.source_url = source_url
 
     def getbuffer(self):
         return self._data
+
 
 
 # ======================================================
@@ -2924,11 +2954,12 @@ def _run_word_link_report_streamlit(
     - Nombre del Archivo
     - Página/Diapositiva
     - Links
+    - source_url (opcional, cuando proviene de Descarga Masiva)
 
     Devuelve (df_links, lista_errores).
     """
     if not uploaded_docs:
-        empty_df = pd.DataFrame(columns=["Nombre del Archivo", "Página/Diapositiva", "Links"])
+        empty_df = pd.DataFrame(columns=["Nombre del Archivo", "Página/Diapositiva", "Links", "source_url"])
         return empty_df, []
 
     all_rows: List[Dict[str, Any]] = []
@@ -2939,12 +2970,19 @@ def _run_word_link_report_streamlit(
 
     for idx, up in enumerate(uploaded_docs, start=1):
         file_name = up.name
+        source_url = getattr(up, "source_url", None)
+
         status_text.markdown(f"Analizando **{idx}/{total_files}** · `{file_name}`")
         progress_bar.progress((idx - 1) / total_files)
 
         try:
             data = up.getbuffer()
             rows = _extract_links_from_docx_bytes(bytes(data), file_name)
+
+            # 🔹 Añadimos la URL origen (si existe) a cada fila de links
+            for r in rows:
+                r["source_url"] = source_url
+
             all_rows.extend(rows)
         except Exception as e:
             logger.error(f"Error procesando Word {file_name}: {e}")
@@ -2954,9 +2992,11 @@ def _run_word_link_report_streamlit(
 
     if all_rows:
         df = pd.DataFrame(all_rows)
-        df = df.sort_values(["Nombre del Archivo", "Página/Diapositiva", "Links"]).reset_index(drop=True)
+        df = df.sort_values(
+            ["Nombre del Archivo", "Página/Diapositiva", "Links"]
+        ).reset_index(drop=True)
     else:
-        df = pd.DataFrame(columns=["Nombre del Archivo", "Página/Diapositiva", "Links"])
+        df = pd.DataFrame(columns=["Nombre del Archivo", "Página/Diapositiva", "Links", "source_url"])
 
     elapsed = (datetime.now() - start_time).total_seconds()
     logger.info("Análisis de DOCX completado en %.2fs", elapsed)
@@ -2977,6 +3017,9 @@ def _run_pdf_extraction_streamlit(
     Los DOCX dentro del ZIP final usan el nombre original del PDF
     (o del PDF dentro del ZIP de entrada), sin prefijos como '001_'
     ni el prefijo 'Descarga_Masiva_Documentos_YYYYMMDD_HHMMSS_'.
+
+    Además, cuando el PDF proviene de la Descarga Masiva, se conserva
+    la URL origen (`source_url`) para poder enlazar con el Excel de URLs.
     """
     if not uploaded_pdfs:
         return [], [], None
@@ -2984,12 +3027,11 @@ def _run_pdf_extraction_streamlit(
     tmp_dir = Path(tempfile.mkdtemp(prefix="utp_pdf_extr_"))
     processor = PDFBatchProcessor(max_workers=max_workers)
     options = {
-    "usar_multihilo": usar_multihilo,
-    "max_workers": max_workers,
-    # 🔧 IMPORTANTE: no filtrar bibliografía para conservar todos los links
-    "filtrar_bibliografia": False,
+        "usar_multihilo": usar_multihilo,
+        "max_workers": max_workers,
+        # 🔧 IMPORTANTE: no filtrar bibliografía para conservar todos los links
+        "filtrar_bibliografia": False,
     }
-
 
     resultados: List[Dict[str, Any]] = []
     errores: List[Dict[str, Any]] = []
@@ -2997,7 +3039,10 @@ def _run_pdf_extraction_streamlit(
     start_time = datetime.now()
 
     for idx, up in enumerate(uploaded_pdfs, start=1):
-        pdf_name = up.name  # nombre "original" que veías en el paso 1
+        pdf_name = up.name  # nombre original "visible" del PDF
+        # 🔹 Si proviene de la Descarga Masiva, tendrá la URL origen
+        source_url = getattr(up, "source_url", None)
+
         status_text.markdown(f"Procesando **{idx}/{total_files}** · `{pdf_name}`")
         progress_bar.progress((idx - 1) / total_files)
 
@@ -3010,8 +3055,9 @@ def _run_pdf_extraction_streamlit(
         # Procesar PDF → Word
         result = processor.process_single_pdf(str(pdf_temp_path), str(tmp_dir), options)
 
-        # Guardamos el nombre original del PDF para usarlo al construir el ZIP
+        # Guardamos el nombre original del PDF y la URL origen
         result["original_pdf_name"] = pdf_name
+        result["source_url"] = source_url
 
         if result.get("status") == "success":
             resultados.append(result)
@@ -3031,13 +3077,6 @@ def _run_pdf_extraction_streamlit(
     # --- Construir ZIP con nombres limpios ---
     zip_buffer = io.BytesIO()
 
-    # Prefijo automático generado por el módulo Descarga Masiva:
-    # Descarga_Masiva_Documentos_YYYYMMDD_HHMMSS_
-    descarga_prefix_re = re.compile(
-        r"^Descarga_Masiva_Documentos_\d{8}_\d{6}_",
-        re.IGNORECASE,
-    )
-
     used_names: set[str] = set()
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -3046,13 +3085,13 @@ def _run_pdf_extraction_streamlit(
             if not out_path or not os.path.exists(out_path):
                 continue
 
-            # Nombre "ideal" del DOCX en el ZIP
+            # Nombre "ideal" del DOCX en el ZIP basado en el PDF original
             orig_name = r.get("original_pdf_name")
             if orig_name:
                 orig_stem = Path(orig_name).stem
 
                 # 1) quitar prefijo del ZIP de Descarga Masiva, si existe
-                clean_stem = descarga_prefix_re.sub("", orig_stem)
+                clean_stem = DESCARGA_PREFIX_RE.sub("", orig_stem)
 
                 # por seguridad nunca dejarlo vacío
                 if not clean_stem:
@@ -3081,6 +3120,41 @@ def _run_pdf_extraction_streamlit(
             zf.write(out_path, arcname)
 
     zip_buffer.seek(0)
+
+    # --- Crear lista de DOCX "en memoria" para el siguiente paso (Word → Links) ---
+    word_docs: List[InMemoryUploadedDOCX] = []
+    for r in resultados:
+        out_path = r.get("output")
+        if not out_path:
+            continue
+        try:
+            if os.path.exists(out_path):
+                with open(out_path, "rb") as fh:
+                    data = fh.read()
+
+                orig_name = r.get("original_pdf_name") or Path(out_path).name
+                display_stem = Path(orig_name).stem
+                # quitar prefijo Descarga_Masiva_Documentos_YYYYMMDD_HHMMSS_ si aplica
+                display_stem = DESCARGA_PREFIX_RE.sub("", display_stem)
+                if not display_stem:
+                    display_stem = Path(out_path).stem
+
+                display_name = f"{display_stem}.docx"
+
+                # 🔹 Pasamos también la URL origen al DOCX "virtual"
+                word_docs.append(
+                    InMemoryUploadedDOCX(
+                        display_name,
+                        data,
+                        source_url=r.get("source_url"),
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Error leyendo DOCX generado '{out_path}': {e}")
+
+    # Guardamos los DOCX en sesión para el módulo Word → Links
+    st.session_state["pipeline_word_docs"] = word_docs
+
     return resultados, errores, zip_buffer.getvalue()
 
 
@@ -3101,23 +3175,42 @@ def page_home():
     )
     ui_card_close()
 
+def page_report_broken_unificado():
+    """
+    Pantalla unificada 'Report Broken Link':
+    1) Bulk Download desde Excel
+    2) PDF → Word
+    3) Word → Links
+    4) Links → Validación + Excel Status
+    """
 
-def page_descarga_masiva():
-    """Módulo Bulk Download: descarga documentos desde un Excel con URLs."""
+    # ======================================================
+    # 1. Bulk Document (PDF, WORD and PPT) Download
+    # ======================================================
     render_hero(
         "Bulk Document (PDF, WORD and PPT) Download",
         "Descarga múltiple de documentos PDF, Word y PPT desde un archivo Excel de URLs.",
         "⬇️",
     )
 
-    # Tarjeta 1: Selección de Excel + resumen
+    # Botón Reiniciar justo debajo del primer bloque
+    st.markdown('<div class="hero-reset-anchor"></div>', unsafe_allow_html=True)
+    if st.button("Reiniciar", key="btn_reset_report_broken"):
+        reset_report_broken_pipeline()
+        try:
+            st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
+
+    # ---------- TARJETA: Selección de Excel (Paso 1) ----------
     ui_card_open()
     step1_ph = st.empty()
 
+    bulk_uploader_key = f"pipeline_bulk_excel_uploader_{st.session_state.get('pipeline_reset_token', 0)}"
     uploaded_excel = st.file_uploader(
         "Seleccione el archivo Excel que contiene las URLs de los documentos a descargar",
         type=["xlsx", "xls"],
-        key="descarga_excel_uploader_ultra",
+        key=bulk_uploader_key,
     )
 
     file_ok = uploaded_excel is not None
@@ -3130,150 +3223,168 @@ def page_descarga_masiva():
         unsafe_allow_html=True,
     )
 
-    if not file_ok:
-        st.caption("Carga un archivo Excel para continuar.")
-        ui_card_close()
-        return
+    bulk_urls_archivos: List[str] = []
+    df_in_bulk: Optional[pd.DataFrame] = None
 
-    try:
-        df_in = _read_excel_safe(uploaded_excel)
-    except Exception as e:
-        st.error(str(e))
-        ui_card_close()
-        return
+    st.session_state["bulk_has_valid_urls"] = False
+    st.session_state["bulk_urls_archivos"] = None
+    st.session_state["bulk_excel_df"] = None 
 
-    if "url" not in df_in.columns:
-        st.error("El Excel no contiene la columna requerida: **url**.")
-        st.caption(f"Columnas detectadas: {', '.join(map(str, df_in.columns.tolist()))}")
-        ui_card_close()
-        return
+    if file_ok:
+        try:
+            df_in_bulk = _read_excel_safe(uploaded_excel)
+        except Exception as e:
+            st.error(str(e))
+            
+        else:
+            st.session_state["bulk_excel_df"] = df_in_bulk
+            
+            if "url" not in df_in_bulk.columns:
+                st.error("El Excel no contiene la columna requerida: **url**.")
+                st.caption(
+                    f"Columnas detectadas: {', '.join(map(str, df_in_bulk.columns.tolist()))}"
+                )
+            else:
+                df_urls = df_in_bulk["url"].dropna().astype(str).str.strip()
+                bulk_urls_archivos = [
+                    u for u in df_urls if u.lower().endswith(DESC_EXT_PERMITIDAS)
+                ]
+                total_urls = len(df_urls)
+                total_permitidas = len(bulk_urls_archivos)
 
-    df_urls = df_in["url"].dropna().astype(str).str.strip()
-    urls_archivos = [u for u in df_urls if u.lower().endswith(DESC_EXT_PERMITIDAS)]
-    total_urls = len(df_urls)
-    total_permitidas = len(urls_archivos)
+                if total_permitidas == 0:
+                    st.warning(
+                        "No se encontraron URLs que terminen en .ppt, .pptx, .pdf, .doc o .docx."
+                    )
+                else:
+                    st.session_state["bulk_has_valid_urls"] = True
+                    st.session_state["bulk_urls_archivos"] = bulk_urls_archivos
 
-    if total_permitidas == 0:
-        st.warning("No se encontraron URLs que terminen en .ppt, .pptx, .pdf, .doc o .docx.")
-        ui_card_close()
-        return
+                    # Firma para detectar cambio de Excel
+                    try:
+                        excel_bytes = uploaded_excel.getbuffer()
+                        bulk_signature = (uploaded_excel.name, len(excel_bytes))
+                    except Exception:
+                        bulk_signature = (uploaded_excel.name, 0)
 
-    with st.expander("2. Archivo Excel seleccionado", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Filas totales", f"{len(df_in)}")
-        c2.metric("URLs no vacías", f"{total_urls}")
-        c3.metric("URLs válidas a descargar", f"{total_permitidas}")
-        st.dataframe(df_in.head(200), use_container_width=True, height=260)
+                    prev_bulk_sig = st.session_state.get("pipeline_bulk_signature")
+                    if prev_bulk_sig != bulk_signature:
+                        st.session_state["pipeline_bulk_signature"] = bulk_signature
+                        st.session_state["pipeline_bulk_done"] = False
+
+                        # Reset fases posteriores
+                        st.session_state["pipeline_pdf_signature"] = None
+                        st.session_state["pipeline_pdf_done"] = False
+                        st.session_state["pipeline_pdf_results"] = None
+                        st.session_state["pipeline_pdf_errors"] = None
+
+                        st.session_state["pipeline_word_docs"] = None
+                        st.session_state["pipeline_word_done"] = False
+                        st.session_state["pipeline_df_links"] = None
+                        st.session_state["pipeline_word_errors"] = None
+
+                        st.session_state["pipeline_status_done"] = False
+                        st.session_state["status_result_df"] = None
+                        st.session_state["status_export_df"] = None
+                        st.session_state["status_invalid_df"] = None
+
+    else:
+        st.caption(
+            "Carga un archivo Excel para continuar con la descarga masiva."
+        )
 
     ui_card_close()
 
-    # Tarjeta 2: Procesar Descarga Masiva
+    # ---------- TARJETA: Procesar Descarga Masiva (Paso 2) ----------
     ui_card_open()
-    render_simple_step_header("4", "Procesar Descarga Masiva")
+    render_simple_step_header("2", "Procesar Descarga Masiva")
 
     if not _requests_available_or_warn():
         ui_card_close()
         return
 
-    progress_bar = st.empty()
-    progress_text = st.empty()
+    progress_bar_bulk = st.empty()
+    progress_text_bulk = st.empty()
 
-    if st.button("🚀 Procesar Descarga Masiva", type="primary"):
+    urls_archivos_state = st.session_state.get("bulk_urls_archivos") or []
+    auto_trigger_bulk = bool(urls_archivos_state) and not st.session_state.get(
+        "pipeline_bulk_done", False
+    )
+    manual_click_bulk = st.button(
+        "🚀 Procesar Descarga Masiva",
+        type="primary",
+        key="pipeline_btn_bulk_process",
+    )
+
+    if urls_archivos_state and (auto_trigger_bulk or manual_click_bulk):
         try:
-            progress_bar.progress(0.0)
-            progress_text.markdown("Preparando descarga masiva...")
+            progress_bar_bulk.progress(0.0)
+            progress_text_bulk.markdown("Preparando descarga masiva...")
 
             with st.spinner("Descargando archivos..."):
                 resultados, fallidos, zip_bytes = _run_descarga_masiva_streamlit(
-                    urls_archivos,
-                    progress_bar=progress_bar,
-                    progress_text=progress_text,
+                    urls_archivos_state,
+                    progress_bar=progress_bar_bulk,
+                    progress_text=progress_text_bulk,
                 )
 
             st.session_state["descarga_resultados"] = resultados
             st.session_state["descarga_fallidos"] = fallidos
             st.session_state["descarga_zip_bytes"] = zip_bytes
+            st.session_state["pipeline_bulk_done"] = True
 
-            progress_bar.empty()
-            progress_text.markdown("✅ Descarga masiva completada.")
-
-            ok = len([r for r in resultados if r.get("status") == "OK"])
-            total = len(urls_archivos)
-            err = len(fallidos)
-
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total archivos", total)
-            m2.metric("Descargados OK", ok)
-            m3.metric("Con error", err)
-
-            with st.expander("📊 Detalle de descargas"):
-                filas = []
-                for r in resultados:
-                    filas.append(
-                        {
-                            "URL": r.get("url"),
-                            "Archivo": r.get("nombre_archivo"),
-                            "Estado": r.get("status"),
-                        }
-                    )
-                for f in fallidos:
-                    filas.append(
-                        {
-                            "URL": f.get("url"),
-                            "Archivo": f.get("nombre_archivo"),
-                            "Estado": "ERROR",
-                            "Detalle": f.get("error", ""),
-                        }
-                    )
-                if filas:
-                    df_res = pd.DataFrame(filas)
-                    st.dataframe(df_res, use_container_width=True, height=300)
-                else:
-                    st.write("No hay resultados para mostrar.")
-
-            if fallidos:
-                st.caption(
-                    "Se generó también un archivo **descargas_fallidas.csv** "
-                    "incluido dentro del ZIP con el detalle de errores."
-                )
-
+            progress_bar_bulk.empty()
+            progress_text_bulk.markdown("✅ Descarga masiva completada.")
         except Exception as e:
-            progress_bar.empty()
-            progress_text.empty()
+            progress_bar_bulk.empty()
+            progress_text_bulk.empty()
             st.error(f"Ocurrió un error durante la descarga masiva: {e}")
+
+    # Pequeño resumen (sin expander de detalle)
+    resultados_ready = st.session_state.get("descarga_resultados") or []
+    fallidos_ready = st.session_state.get("descarga_fallidos") or []
+
+    # Ya no mostramos métricas de Total archivos / OK / Con error para este paso.
+    # Solo mostramos el mensaje de ayuda cuando aún no hay URLs para procesar.
+    if not (resultados_ready or fallidos_ready):
+        if not urls_archivos_state:
+            st.caption(
+                "Primero carga un Excel válido con URLs para poder procesar la descarga."
+            )
+
 
     ui_card_close()
 
-    # Tarjeta 3: Descargar ZIP
+    # ---------- TARJETA: Descargar ZIP (Paso 3) ----------
     ui_card_open()
-    render_simple_step_header("5", "Descargar todos los archivos (PDF, Word, PPT) (ZIP)")
+    render_simple_step_header("3", "Descargar todos los archivos (PDF, Word, PPT) (ZIP)")
 
     zip_bytes_ready = st.session_state.get("descarga_zip_bytes")
     resultados_ready = st.session_state.get("descarga_resultados") or []
+    fallidos_ready = st.session_state.get("descarga_fallidos") or []
 
-    if not zip_bytes_ready or (not resultados_ready and not st.session_state.get("descarga_fallidos")):
-        st.warning("Primero ejecuta el paso 4 para generar las descargas.")
-        ui_card_close()
-        return
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_name = f"Descarga_Masiva_Documentos_{ts}.zip"
-
-    st.download_button(
-        "⬇️ Descargar todos los archivos (ZIP)",
-        data=zip_bytes_ready,
-        file_name=zip_name,
-        mime="application/zip",
-    )
+    if not zip_bytes_ready or (not resultados_ready and not fallidos_ready):
+        st.warning(
+            "Primero ejecuta el paso 2 para generar las descargas."
+        )
+    else:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"Descarga_Masiva_Documentos_{ts}.zip"
+        st.download_button(
+            "⬇️ Descargar todos los archivos (ZIP)",
+            data=zip_bytes_ready,
+            file_name=zip_name,
+            mime="application/zip",
+        )
 
     ui_card_close()
 
-
-def page_extraccion_masiva():
-    """Módulo PDF to Word: PDF → Word (acepta PDF sueltos y ZIP con PDFs)."""
+    # ======================================================
+    # 2. PDF to Word Transformation (ZIP)
+    # ======================================================
     render_hero(
         "PDF to Word Transformation (ZIP)",
-        "Convierte múltiples PDFs a Word sin filtrar bibliografía y reordenando el texto."
+        "Convierte múltiples PDFs a Word sin filtrar bibliografía y reordenando el texto.",
         "🧲",
     )
 
@@ -3289,77 +3400,143 @@ def page_extraccion_masiva():
         ui_card_close()
         return
 
-    # 1. Agregar PDFs (directos o desde ZIP)
     ui_card_open()
-    step1_ph = st.empty()
+    step_pdf1 = st.empty()
 
+    pdf_uploader_key = f"pipeline_pdf_uploader_ultra_{st.session_state.get('pipeline_reset_token', 0)}"
     uploaded_files = st.file_uploader(
         "Selecciona uno o más archivos PDF o ZIP (ZIP con PDFs en su interior)",
         type=["pdf", "zip"],
         accept_multiple_files=True,
-        key="extr_pdf_uploader_ultra",
-        help="Puedes arrastrar varios PDFs o ZIP con PDFs.",
+        key=pdf_uploader_key,
+        help="Si ya ejecutaste la Descarga Masiva, aquí llegarán automáticamente los PDFs.",
     )
 
-    # Lista final de PDFs a procesar (UploadedFile reales + PDFs extraídos de ZIP)
     all_pdfs: List[Any] = []
 
+    # PDFs provenientes de Descarga Masiva (si existen)
+    resultados_desc = st.session_state.get("descarga_resultados") or []
+    for r in resultados_desc:
+        ruta = r.get("ruta_archivo")
+        if not ruta:
+            continue
+        ruta_str = str(ruta)
+        if not ruta_str.lower().endswith(".pdf"):
+            continue
+        try:
+            with open(ruta_str, "rb") as fh:
+                data = fh.read()
+
+            # 🔹 Guardamos también la URL origen del PDF (para enlazar con name / link_class)
+            source_url = r.get("url")
+
+            all_pdfs.append(
+                InMemoryUploadedPDF(
+                    Path(ruta_str).name,
+                    data,
+                    source_url=source_url,
+                )
+            )
+        except Exception as e:
+            logger.warning(f"No se pudo leer PDF descargado '{ruta_str}': {e}")
+
+
+    # PDFs / ZIP subidos manualmente
     if uploaded_files:
         for f in uploaded_files:
             fname_lower = f.name.lower()
 
-            # Caso 1: PDF directo
+            # 🆕 4.1 PDFs directos: también los envolvemos para poder llevar un "source_url"
             if fname_lower.endswith(".pdf"):
-                all_pdfs.append(f)
+                all_pdfs.append(
+                    InMemoryUploadedPDF(
+                        f.name,          # nombre visible del PDF
+                        f.getbuffer(),   # datos en memoria
+                        source_url=f.name,  # usamos el nombre del PDF como "source_url"
+                    )
+                )
 
-            # Caso 2: ZIP con PDFs dentro
+            # 🆕 4.2 ZIPs manuales: guardamos el nombre del ZIP como "source_url"
             elif fname_lower.endswith(".zip"):
                 try:
-                    # Leemos el ZIP en memoria
                     zdata = io.BytesIO(f.getbuffer())
                     with zipfile.ZipFile(zdata, "r") as zf:
                         for info in zf.infolist():
-                            # Omitir directorios
                             if info.is_dir():
                                 continue
-                            # Sólo PDFs
                             if not info.filename.lower().endswith(".pdf"):
                                 continue
 
                             pdf_bytes = zf.read(info)
+                            # Usar SOLO el nombre real del PDF dentro del ZIP
                             inner_name = Path(info.filename).name
-                            # Nombre amigable: prefijo con nombre del ZIP
-                            safe_name = f"{Path(f.name).stem}_{inner_name}"
+                            safe_name = inner_name
 
+                            # 🔹 Aquí el "source_url" será el NOMBRE DEL ZIP manual (lo que quieres ver en 'name')
                             all_pdfs.append(
-                                InMemoryUploadedPDF(safe_name, pdf_bytes)
+                                InMemoryUploadedPDF(
+                                    safe_name,      # nombre del PDF dentro del ZIP
+                                    pdf_bytes,
+                                    source_url=f.name,  # <- NOMBRE DEL ZIP
+                                )
                             )
                 except Exception as e:
                     st.warning(f"No se pudo leer el ZIP `{f.name}`: {e}")
 
-    has_files = len(all_pdfs) > 0
 
-    step1_ph.markdown(
+
+    has_pdfs = len(all_pdfs) > 0
+
+    step_pdf1.markdown(
         render_step_header_html(
-            "1",
+            "4",  # Num secuencial
             "Agregar PDF's (directos o desde ZIP)",
-            "ok" if has_files else "warn",
+            "ok" if has_pdfs else "warn",
         ),
         unsafe_allow_html=True,
     )
 
-    if not has_files:
-        st.caption("Agrega al menos un PDF (directo o dentro de un ZIP) para continuar.")
+    if not has_pdfs:
+        st.caption(
+            "Agrega PDFs manualmente o ejecuta primero la Descarga Masiva para que lleguen aquí automáticamente."
+        )
         ui_card_close()
         return
 
-    # 2. Archivos PDF's seleccionados (colapsado por defecto)
-    with st.expander("2. Archivos PDF's seleccionados", expanded=False):
+    # Firma de PDFs para controlar re-ejecuciones
+    try:
+        signature = sorted(
+            (f.name, len(f.getbuffer())) for f in all_pdfs  # type: ignore[attr-defined]
+        )
+    except Exception:
+        signature = sorted(
+            (getattr(f, "name", str(idx)), 0) for idx, f in enumerate(all_pdfs)
+        )
+
+    prev_sig = st.session_state.get("pipeline_pdf_signature")
+    if prev_sig != signature:
+        st.session_state["pipeline_pdf_signature"] = signature
+        st.session_state["pipeline_pdf_done"] = False
+        st.session_state["pipeline_pdf_results"] = None
+        st.session_state["pipeline_pdf_errors"] = None
+
+        st.session_state["pipeline_word_docs"] = None
+        st.session_state["pipeline_word_done"] = False
+        st.session_state["pipeline_df_links"] = None
+        st.session_state["pipeline_word_errors"] = None
+
+        st.session_state["pipeline_status_done"] = False
+        st.session_state["status_result_df"] = None
+        st.session_state["status_export_df"] = None
+        st.session_state["status_invalid_df"] = None
+
+    # 2. Archivos PDF seleccionados (expander sin numeración)
+    with st.expander("Archivos PDF's seleccionados", expanded=False):
         df_files = _build_pdf_file_table(all_pdfs)
         st.dataframe(df_files, use_container_width=True, height=260)
 
-    # 3. Opciones de procesamiento (colapsado por defecto)
-    with st.expander("3. Opciones de procesamiento", expanded=False):
+    # 3. Opciones de procesamiento
+    with st.expander("Opciones de procesamiento de PDFs", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             usar_multihilo = st.toggle(
@@ -3378,927 +3555,71 @@ def page_extraccion_masiva():
                 key="extr_max_workers",
             )
 
-    # 4. Procesar todos los PDF's
-    render_simple_step_header("4", "Procesar todos los PDF's")
+    # 4. Procesar todos los PDF's (Paso 5)
+    render_simple_step_header("5", "Procesar todos los PDF's")
 
-    progress_bar = st.empty()
-    status_text = st.empty()
+    progress_bar_pdf = st.empty()
+    status_text_pdf = st.empty()
 
-    if st.button("🚀 Procesar todos los PDF's", type="primary"):
+    auto_trigger_pdf = not st.session_state.get("pipeline_pdf_done", False)
+    manual_click_pdf = st.button(
+        "🚀 Procesar todos los PDF's",
+        type="primary",
+        key="pipeline_btn_pdf_process",
+    )
+
+    if auto_trigger_pdf or manual_click_pdf:
         try:
-            progress_bar.progress(0.0)
-            status_text.markdown("Iniciando procesamiento de PDFs...")
+            progress_bar_pdf.progress(0.0)
+            status_text_pdf.markdown("Iniciando procesamiento de PDFs...")
 
             with st.spinner("Extrayendo texto y generando archivos Word..."):
                 resultados, errores, zip_bytes = _run_pdf_extraction_streamlit(
                     all_pdfs,
                     usar_multihilo=bool(usar_multihilo),
                     max_workers=int(max_workers),
-                    progress_bar=progress_bar,
-                    status_text=status_text,
+                    progress_bar=progress_bar_pdf,
+                    status_text=status_text_pdf,
                 )
 
+            st.session_state["pipeline_pdf_results"] = resultados
+            st.session_state["pipeline_pdf_errors"] = errores
             st.session_state["extraccion_resultados"] = resultados
             st.session_state["extraccion_errores"] = errores
             st.session_state["extraccion_zip_bytes"] = zip_bytes
+            st.session_state["pipeline_pdf_done"] = True
 
-            progress_bar.empty()
-
+            progress_bar_pdf.empty()
+            status_text_pdf.markdown("✅ Procesamiento de PDFs completado.")
+        except Exception as e:
+            progress_bar_pdf.empty()
+            status_text_pdf.empty()
+            st.error(f"Ocurrió un error durante el procesamiento de PDFs: {e}")
+    else:
+        resultados = st.session_state.get("pipeline_pdf_results") or []
+        errores = st.session_state.get("pipeline_pdf_errors") or []
+        if resultados or errores:
             total_ok = len(resultados)
             total_err = len(errores)
+            total_files = total_ok + total_err
             total_pag = sum(
                 r.get("stats", {}).get("paginas_procesadas", 0)
                 for r in resultados
                 if r.get("stats")
             )
 
-            status_text.markdown("✅ Procesamiento completado.")
-
             m1, m2, m3 = st.columns(3)
-            m1.metric("Archivos procesados", total_ok + total_err)
+            m1.metric("Archivos procesados", total_files)
             m2.metric("Completados", total_ok)
             m3.metric("Errores", total_err)
-
-            with st.expander("📊 Detalle de procesamiento"):
-                filas = []
-                for r in resultados:
-                    filas.append(
-                        {
-                            "Archivo": Path(r.get("file", "")).name,
-                            "Páginas": r.get("stats", {}).get("paginas_procesadas", 0),
-                            "Estado": "COMPLETADO",
-                            "Salida (Word)": Path(r.get("output", "")).name,
-                        }
-                    )
-                for e in errores:
-                    filas.append(
-                        {
-                            "Archivo": Path(e.get("file", "")).name,
-                            "Páginas": None,
-                            "Estado": "ERROR",
-                            "Salida (Word)": "",
-                        }
-                    )
-                if filas:
-                    df_res = pd.DataFrame(filas)
-                    st.dataframe(df_res, use_container_width=True, height=300)
-                else:
-                    st.write("No hay resultados para mostrar.")
 
             if total_pag:
                 st.caption(f"Páginas totales procesadas: **{total_pag}**")
 
-        except Exception as e:
-            progress_bar.empty()
-            status_text.empty()
-            st.error(f"Ocurrió un error durante el procesamiento: {e}")
-
     ui_card_close()
-
-    # 5. Descargar todos los PDF's (ZIP)
-    ui_card_open()
-    render_simple_step_header("5", "Descargar todos los PDF's a Word (ZIP)")
-
-    zip_bytes = st.session_state.get("extraccion_zip_bytes")
-    resultados = st.session_state.get("extraccion_resultados") or []
-
-    if not zip_bytes or not resultados:
-        st.warning("Primero ejecuta el paso 4 para generar los archivos Word.")
-        ui_card_close()
-        return
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_name = f"PDFs_a_Word_{ts}.zip"
-
-    st.download_button(
-        "⬇️ Descargar todos los PDF's a Word (ZIP)",
-        data=zip_bytes,
-        file_name=zip_name,
-        mime="application/zip",
-    )
-
-    ui_card_close()
-
-
-def page_reporte_link():
-    """
-    Módulo Report Word Link
-    1. Agregar documentos Word's (directos o desde ZIP)
-    2. Archivo Word's seleccionado (expander colapsado)
-    3. Procesar todos los documentos Word's (extraer links)
-    4. Descargar Report Word Link Excel (hoja 'Resultados')
-    """
-    render_hero(
-        "Report Word Link (Excel)",
-        "Genera un Excel con todos los Links detectados en documentos Word.",
-        "📊",
-    )
-
-    # Validar dependencia
-    if Document is None:
-        ui_card_open()
-        st.error(
-            "Falta la librería `python-docx` para procesar documentos Word.\n\n"
-            "Instala con: `pip install python-docx` y vuelve a desplegar la aplicación."
-        )
-        ui_card_close()
-        return
-
-    # ============================
-    # 1. Agregar documentos Word's
-    # ============================
-    ui_card_open()
-    step1_ph = st.empty()
-
-    uploaded_files = st.file_uploader(
-        "Selecciona uno o más archivos Word (.docx) o ZIP (ZIP con DOCX en su interior)",
-        type=["docx", "zip"],
-        accept_multiple_files=True,
-        key="reporte_word_uploader_ultra",
-        help="Puedes arrastrar varios DOCX o ZIP con DOCX.",
-    )
-
-    # Lista final de DOCX a procesar (UploadedFile reales + DOCX extraídos de ZIP)
-    all_docs: List[Any] = []
-
-    if uploaded_files:
-        for f in uploaded_files:
-            fname_lower = f.name.lower()
-
-            # Caso 1: DOCX directo
-            if fname_lower.endswith(".docx"):
-                all_docs.append(f)
-
-            # Caso 2: ZIP con DOCX dentro
-            elif fname_lower.endswith(".zip"):
-                try:
-                    zdata = io.BytesIO(f.getbuffer())
-                    with zipfile.ZipFile(zdata, "r") as zf:
-                        for info in zf.infolist():
-                            if info.is_dir():
-                                continue
-                            if not info.filename.lower().endswith(".docx"):
-                                continue
-
-                            docx_bytes = zf.read(info)
-                            inner_name = Path(info.filename).name
-                            # Usamos el nombre interno del ZIP como nombre "real" del archivo
-                            safe_name = inner_name
-
-                            all_docs.append(
-                                InMemoryUploadedDOCX(safe_name, docx_bytes)
-                            )
-                except Exception as e:
-                    st.warning(f"No se pudo leer el ZIP `{f.name}`: {e}")
-
-    has_docs = len(all_docs) > 0
-
-    step1_ph.markdown(
-        render_step_header_html(
-            "1",
-            "Agregar documentos Word's (directos o desde ZIP)",
-            "ok" if has_docs else "warn",
-        ),
-        unsafe_allow_html=True,
-    )
-
-    if not has_docs:
-        st.caption("Agrega al menos un documento Word (.docx) o un ZIP con DOCX para continuar.")
-        ui_card_close()
-        return
-
-    # =====================================
-    # 2. Archivo Word's seleccionado (exp.)
-    # =====================================
-    with st.expander("2. Archivo Word's seleccionado", expanded=False):
-        df_files = _build_word_file_table(all_docs)
-        st.dataframe(df_files, use_container_width=True, height=260)
-
-    # ========================================
-    # 3. Procesar todos los documentos Word's
-    # ========================================
-    render_simple_step_header("3", "Procesar todos los documentos Word's")
-
-    progress_bar = st.empty()
-    status_text = st.empty()
-
-    if st.button("🚀 Procesar todos los documentos Word's", type="primary"):
-        try:
-            progress_bar.progress(0.0)
-            status_text.markdown("Iniciando análisis de documentos Word...")
-
-            with st.spinner("Buscando enlaces dentro de los documentos Word..."):
-                df_links, errores = _run_word_link_report_streamlit(
-                    all_docs,
-                    progress_bar=progress_bar,
-                    status_text=status_text,
-                )
-
-            st.session_state["reporte_links_df"] = df_links
-
-            progress_bar.empty()
-            status_text.markdown("✅ Análisis completado.")
-
-            total_docs = len(all_docs)
-            total_links = len(df_links)
-            docs_con_links = df_links["Nombre del Archivo"].nunique() if not df_links.empty else 0
-
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Documentos analizados", total_docs)
-            m2.metric("Documentos con links", docs_con_links)
-            m3.metric("Links detectados", total_links)
-
-            with st.expander("📊 Detalle de links detectados"):
-                if not df_links.empty:
-                    st.dataframe(df_links, use_container_width=True, height=320)
-                else:
-                    st.write("No se detectaron links en los documentos analizados.")
-
-            if errores:
-                with st.expander("⚠️ Errores al procesar algunos documentos"):
-                    df_err = pd.DataFrame(errores)
-                    st.dataframe(df_err, use_container_width=True, height=220)
-
-        except Exception as e:
-            progress_bar.empty()
-            status_text.empty()
-            st.error(f"Ocurrió un error durante el análisis de documentos Word: {e}")
-
-    ui_card_close()
-
-    # ==============================================
-    # 4. Descarga Report Word Link  Excel (hoja Resultados)
-    # ==============================================
-    ui_card_open()
-    render_simple_step_header("4", "Descargar Report Word Link Excel")
-
-    df_ready: Optional[pd.DataFrame] = st.session_state.get("reporte_links_df")
-
-    if df_ready is None or df_ready.empty:
-        st.warning("Primero ejecuta el paso 3 para generar el reporte de links.")
-        ui_card_close()
-        return
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name = f"Reporte_Link_{ts}.xlsx"
-
-    excel_bytes = _to_excel_reporte_links(df_ready)
-
-    st.download_button(
-        "⬇️ Descargar Report Word Link Excel",
-        data=excel_bytes,
-        file_name=file_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-    ui_card_close()
-
-
-def page_status_link_checker():
-    render_hero(
-        title="Report Broken Link (Excel)",
-        subtitle="Comprueba automáticamente si los Links de tu reporte Excel están activos o rotos.",
-        icon="🧭",
-    )
-
-    # PASO 1: CARGAR
-    ui_card_open()
-    step1_ph = st.empty()
-
-    uploaded = st.file_uploader(
-        "Sube el archivo Excel con columna 'Links'",
-        type=["xlsx"],
-        help="Debe contener una columna llamada 'Links'",
-        key="status_reporte_uploader_ultra_v5",
-    )
-
-    file_ok = uploaded is not None
-    step1_ph.markdown(
-        render_step_header_html("1", "Cargar Archivo Excel - Reporte Link", "ok" if file_ok else "warn"),
-        unsafe_allow_html=True,
-    )
-
-    if not file_ok:
-        st.caption("Carga un Excel para continuar.")
-        ui_card_close()
-        return
-
-    try:
-        df_in = _read_excel_safe(uploaded)
-    except Exception as e:
-        st.error(str(e))
-        ui_card_close()
-        return
-
-    if "Links" not in df_in.columns:
-        st.error("El Excel no contiene la columna requerida: **Links**.")
-        st.caption(f"Columnas detectadas: {', '.join(map(str, df_in.columns.tolist()))}")
-        ui_card_close()
-        return
-
-    # Alinear filas del Excel con los resultados (Fila_Excel = índice real en Excel)
-    df_in = df_in.copy()
-    df_in["Fila_Excel"] = range(2, 2 + len(df_in))
-
-    with st.expander("Parametrizaciones", expanded=False):
-        cN1, cN2, cN3, cN4 = st.columns([1, 1, 1, 1])
-        with cN1:
-            default_scheme = st.selectbox("Esquema por defecto", ["https", "http"], index=0)
-        with cN2:
-            allow_mailto = st.toggle("Incluir mailto:", value=False)
-        with cN3:
-            allow_tel = st.toggle("Incluir tel:", value=False)
-        with cN4:
-            allow_anchor = st.toggle("Permitir #anchor", value=False)
-
-    links_with_rows, df_invalid = _normalize_links(
-        df_in["Links"],
-        allow_mailto=allow_mailto,
-        allow_tel=allow_tel,
-        allow_anchors_only=allow_anchor,
-        default_scheme=default_scheme,
-    )
-
-    st.session_state.status_input_filename = uploaded.name
-    st.session_state.status_input_df = df_in
-    st.session_state.status_links_list = links_with_rows
-    st.session_state.status_result_df = None
-    st.session_state.status_invalid_df = df_invalid
-    st.session_state.status_export_df = None
-
-    with st.expander("Detalle de Links", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Links válidos", f"{len(links_with_rows)}")
-        c2.metric("Total filas", f"{len(df_in)}")
-        c3.metric("Descartados", f"{len(df_invalid)}")
-
-    if not df_invalid.empty:
-        with st.expander("⚠️ Links descartados (Status = INVALIDO)", expanded=False):
-            st.dataframe(df_invalid, use_container_width=True, height=220)
-
-    ui_card_close()
-
-    # PASO 2: PROCESAR
-    ui_card_open()
-    render_simple_step_header("2", "Procesar Reporte Link")
-
-    if not _httpx_available_or_warn():
-        ui_card_close()
-        return
-
-    if len(links_with_rows) == 0 and df_invalid.empty:
-        st.warning("No hay links para procesar (ni válidos ni descartados).")
-        ui_card_close()
-        return
-
-    with st.expander("Configuración de Validación", expanded=False):
-        colA, colB, colC, colD = st.columns(4)
-        with colA:
-            concurrency_global = st.number_input(
-                "Concurrencia global",
-                min_value=1,
-                max_value=400,
-                value=DEFAULT_CONCURRENCY_GLOBAL,
-                step=1,
-            )
-        with colB:
-            concurrency_per_host = st.number_input(
-                "Concurrencia por host",
-                min_value=1,
-                max_value=80,
-                value=DEFAULT_CONCURRENCY_PER_HOST,
-                step=1,
-            )
-        with colC:
-            timeout_s = st.number_input(
-                "Timeout (seg)",
-                min_value=2.0,
-                max_value=120.0,
-                value=DEFAULT_TIMEOUT_S,
-                step=1.0,
-            )
-        with colD:
-            retries = st.number_input(
-                "Reintentos",
-                min_value=0,
-                max_value=6,
-                value=DEFAULT_RETRIES,
-                step=1,
-            )
-
-        colE, colF, colG, colH = st.columns(4)
-        with colE:
-            detect_soft_404 = st.toggle("Detectar soft-404", value=True)
-        with colF:
-            verify_ssl = st.toggle("Verificar SSL", value=True)
-        with colG:
-            max_bytes = st.number_input(
-                "Máx. bytes",
-                min_value=16_000,
-                max_value=512_000,
-                value=DEFAULT_MAX_BYTES,
-                step=8_000,
-            )
-        with colH:
-            range_bytes = st.number_input(
-                "Range bytes",
-                min_value=8_192,
-                max_value=256_000,
-                value=DEFAULT_RANGE_BYTES,
-                step=8_192,
-            )
-
-    progress_bar = st.empty()
-    status_text = st.empty()
-
-    def progress_cb(done: int, total: int, current_url: str, current_status: str):
-        pct = done / max(1, total)
-        progress_bar.progress(pct)
-        show = current_url if len(current_url) <= 85 else ("…" + current_url[-82:])
-        status_text.markdown(
-            f"Validando **{done}/{total}** · `{show}` · **{current_status}**"
-        )
-
-    if st.button("🚀 Iniciar validación", type="primary"):
-        try:
-            progress_bar.progress(0.0)
-            status_text.markdown("Iniciando verificación con motor V5...")
-
-            # 2.1. Ejecutar checker para links válidos
-            if len(links_with_rows) > 0:
-                with st.spinner(
-                    "Validando enlaces (scoring, dominios especiales, soft-404 mejorado)..."
-                ):
-                    results = run_async(
-                        _run_link_check_ultra_v5(
-                            links_with_rows,
-                            timeout_s=float(timeout_s),
-                            concurrency_global=int(concurrency_global),
-                            concurrency_per_host=int(concurrency_per_host),
-                            detect_soft_404=bool(detect_soft_404),
-                            retries=int(retries),
-                            verify_ssl=bool(verify_ssl),
-                            max_bytes=int(max_bytes),
-                            range_bytes=int(range_bytes),
-                            progress_callback=progress_cb,
-                        )
-                    )
-                df_out = pd.DataFrame(results)
-            else:
-                df_out = pd.DataFrame(
-                    columns=[
-                        "Link",
-                        "Status",
-                        "HTTP_Code",
-                        "Detalle",
-                        "Content_Type",
-                        "Redirected",
-                        "Timestamp",
-                        "Final_URL",
-                        "Redirect_Chain",
-                        "Soft_404",
-                        "Score",
-                        "Fila_Excel",
-                    ]
-                )
-
-            # 2.2. Añadir links inválidos como Status=INVALIDO
-            df_invalid_ready: Optional[pd.DataFrame] = st.session_state.get("status_invalid_df")
-            if df_invalid_ready is not None and not df_invalid_ready.empty:
-                now_str_invalid = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                invalid_rows: List[Dict[str, Any]] = []
-                for _, inv in df_invalid_ready.iterrows():
-                    invalid_rows.append(
-                        {
-                            "Link": inv["Valor"],
-                            "Status": "INVALIDO",
-                            "HTTP_Code": None,
-                            "Detalle": inv["Motivo"],
-                            "Content_Type": "",
-                            "Redirected": "No",
-                            "Timestamp": now_str_invalid,
-                            "Final_URL": inv["Valor"],
-                            "Redirect_Chain": inv["Valor"],
-                            "Soft_404": "No",
-                            "Score": -100,
-                            "Fila_Excel": inv["Fila_Excel"],
-                        }
-                    )
-
-                df_invalid_status = pd.DataFrame(
-                    invalid_rows,
-                    columns=[
-                        "Link",
-                        "Status",
-                        "HTTP_Code",
-                        "Detalle",
-                        "Content_Type",
-                        "Redirected",
-                        "Timestamp",
-                        "Final_URL",
-                        "Redirect_Chain",
-                        "Soft_404",
-                        "Score",
-                        "Fila_Excel",
-                    ],
-                )
-
-                df_out = pd.concat([df_out, df_invalid_status], ignore_index=True, sort=False)
-
-            # 2.3. Añadir columnas del Excel original (Archivo, Página/Diapositiva, etc.)
-            df_src = df_in.copy()
-            meta_cols: List[str] = []
-            if "Nombre del Archivo" in df_src.columns:
-                meta_cols.append("Nombre del Archivo")
-            if "Página/Diapositiva" in df_src.columns:
-                meta_cols.append("Página/Diapositiva")
-
-            if meta_cols:
-                df_meta = df_src[["Fila_Excel"] + meta_cols]
-                df_out = df_out.merge(df_meta, on="Fila_Excel", how="left")
-
-            # Ordenar por fila original + status
-            if "Fila_Excel" in df_out.columns:
-                df_out = df_out.sort_values(["Fila_Excel", "Status"]).reset_index(drop=True)
-            else:
-                df_out = df_out.reset_index(drop=True)
-
-            # 2.4. Tipo_Problema
-            try:
-                df_out["Tipo_Problema"] = df_out.apply(_infer_tipo_problema, axis=1)
-            except Exception:
-                df_out["Tipo_Problema"] = ""
-
-            # 2.5. Estandarizar Status (REDIRECT→ACTIVO, ERROR/INVALIDO→ROTO)
-            df_out = _standardize_status_column(df_out)
-
-            # 2.6. DataFrame de exportación (completo, el recorte se hace en _to_excel_report)
-            df_export = df_out.copy()
-            if "Nombre del Archivo" in df_export.columns:
-                df_export = df_export.rename(columns={"Nombre del Archivo": "Archivo"})
-
-            st.session_state.status_result_df = df_out
-            st.session_state.status_export_df = df_export
-
-            progress_bar.empty()
-            status_text.markdown("✅ Validación V5 completada.")
-
-            # === MÉTRICAS SIMPLIFICADAS (solo ACTIVOS y ROTOS) ===
-            col_m1, col_m2 = st.columns(2)
-            col_m1.metric("✅ ACTIVOS", int((df_out["Status"] == "ACTIVO").sum()))
-            col_m2.metric("❌ ROTOS", int((df_out["Status"] == "ROTO").sum()))
-
-            # === TABLA PRINCIPAL DE RESULTADOS EN LAYOUT ===
-            # Solo: Nombre del Archivo | Link | Status (en ese orden)
-            df_view = df_out.copy()
-
-            # Aseguramos columna Nombre del Archivo
-            if "Nombre del Archivo" not in df_view.columns and "Archivo" in df_view.columns:
-                df_view = df_view.rename(columns={"Archivo": "Nombre del Archivo"})
-
-            for col in ["Nombre del Archivo", "Link", "Status"]:
-                if col not in df_view.columns:
-                    df_view[col] = ""
-
-            df_view = df_view[["Nombre del Archivo", "Link", "Status"]]
-
-            st.dataframe(
-                _style_status_dataframe(df_view),
-                use_container_width=True,
-                height=420,
-            )
-
-            # === Detalle de enlaces rotos ===
-            with st.expander("📊 Enlaces ROTOS (incluye soft-404)", expanded=False):
-                rotos = df_out[df_out["Status"] == "ROTO"]
-                if len(rotos) > 0:
-                    for _, row in rotos.iterrows():
-                        emoji = "🔴" if row.get("Soft_404") == "Sí" else "❌"
-                        score_info = f" (Score: {row.get('Score', 0)})"
-                        tipo = row.get("Tipo_Problema", "")
-                        st.markdown(
-                            f"{emoji} Fila {row['Fila_Excel']}: `{row['Link']}`{score_info} → "
-                            f"{row['Detalle']} ({tipo})"
-                        )
-                else:
-                    st.success("No se detectaron enlaces con Status = ROTO.")
-
-        except Exception as e:
-            progress_bar.empty()
-            status_text.empty()
-            st.error(f"Ocurrió un error durante la validación: {e}")
-
-    ui_card_close()
-
-    # PASO 3: DESCARGAR
-    ui_card_open()
-    render_simple_step_header("3", "Descargar Status Reporte (Excel)")
-
-    df_ready: Optional[pd.DataFrame] = st.session_state.get("status_export_df")
-    if df_ready is None:
-        df_ready = st.session_state.get("status_result_df")
-
-    if df_ready is None or df_ready.empty:
-        st.warning("Primero ejecuta el paso 2 para generar el status.")
-        ui_card_close()
-        return
-
-    file_base = Path(st.session_state.status_input_filename or "reporte_link").stem
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_xlsx = f"{file_base}_STATUS_ULTRA_V5_{ts}.xlsx"
-
-    excel_bytes = _to_excel_report(df_ready)
-
-    colD1, colD2 = st.columns([1, 3])
-    with colD1:
-        st.download_button(
-            "⬇️ Descargar Excel Status",
-            data=excel_bytes,
-            file_name=out_xlsx,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-    # with colD2:
-    #     st.info(
-    #         "El Excel incluye la hoja **Status** con las columnas solicitadas."
-    #     )
-
-
-    ui_card_close()
-
-def page_report_broken_unificado():
-    """
-    Módulo unificado Report Broken Link:
-    1) PDF → Word
-    2) Word → Excel de links
-    3) Excel → Validación de links
-    Todo en una sola pantalla, con flujo automático.
-    """
 
     # ======================================================
-    # 3.1 PDF to Word Transformation (ZIP) + botón Reiniciar
-    #    → La franja ocupa todo el ancho y el botón queda alineado a la derecha
-    # ======================================================
-    render_hero(
-        "PDF to Word Transformation (ZIP)",
-        "Convierte múltiples PDFs a Word sin filtrar bibliografía y reordenando el texto.",
-        "🧲",
-    )
-
-    # Ancla para que el botón siguiente se “meta” dentro del hero vía CSS
-    st.markdown('<div class="hero-reset-anchor"></div>', unsafe_allow_html=True)
-
-    # Botón de reset (el CSS lo convierte en icono y lo coloca en la franja)
-    if st.button("Reiniciar", key="btn_reset_report_broken"):
-        reset_report_broken_pipeline()
-        try:
-            st.rerun()
-        except AttributeError:
-            st.experimental_rerun()
-
-    ui_card_open()
-    step1_ph = st.empty()
-
-    # Clave dinámica para poder limpiar el file_uploader al reiniciar
-    uploader_key = f"pipeline_pdf_uploader_ultra_{st.session_state.get('pipeline_reset_token', 0)}"
-
-    uploaded_files = st.file_uploader(
-        "Selecciona uno o más archivos PDF o ZIP (ZIP con PDFs en su interior)",
-        type=["pdf", "zip"],
-        accept_multiple_files=True,
-        key=uploader_key,
-        help="Puedes arrastrar varios PDFs o ZIP con PDFs.",
-    )
-
-    all_pdfs: List[Any] = []
-
-    if uploaded_files:
-        for f in uploaded_files:
-            fname_lower = f.name.lower()
-
-            # PDF directo
-            if fname_lower.endswith(".pdf"):
-                all_pdfs.append(f)
-
-            # ZIP con PDFs dentro
-            elif fname_lower.endswith(".zip"):
-                try:
-                    zdata = io.BytesIO(f.getbuffer())
-                    with zipfile.ZipFile(zdata, "r") as zf:
-                        for info in zf.infolist():
-                            if info.is_dir():
-                                continue
-                            if not info.filename.lower().endswith(".pdf"):
-                                continue
-
-                            pdf_bytes = zf.read(info)
-                            inner_name = Path(info.filename).name
-                            safe_name = f"{Path(f.name).stem}_{inner_name}"
-                            all_pdfs.append(InMemoryUploadedPDF(safe_name, pdf_bytes))
-                except Exception as e:
-                    st.warning(f"No se pudo leer el ZIP `{f.name}`: {e}")
-
-    has_pdfs = len(all_pdfs) > 0
-
-    step1_ph.markdown(
-        render_step_header_html(
-            "1",  # ✅ Paso 1
-            "Agregar PDF's (directos o desde ZIP)",
-            "ok" if has_pdfs else "warn",
-        ),
-        unsafe_allow_html=True,
-    )
-
-    if not has_pdfs:
-        st.caption("Agrega al menos un PDF (directo o dentro de un ZIP) para continuar.")
-        ui_card_close()
-    else:
-        # Detectar cambio en los archivos subidos para resetear pipeline
-        try:
-            signature = sorted(
-                (f.name, len(f.getbuffer())) for f in all_pdfs  # type: ignore[attr-defined]
-            )
-        except Exception:
-            signature = sorted((f.name, 0) for f in all_pdfs)
-
-        prev_sig = st.session_state.get("pipeline_pdf_signature")
-        if prev_sig != signature:
-            st.session_state["pipeline_pdf_signature"] = signature
-            st.session_state["pipeline_pdf_done"] = False
-            st.session_state["pipeline_word_done"] = False
-            st.session_state["pipeline_status_done"] = False
-            st.session_state["pipeline_pdf_results"] = None
-            st.session_state["pipeline_pdf_errors"] = None
-            st.session_state["pipeline_word_docs"] = None
-            st.session_state["pipeline_df_links"] = None
-            st.session_state["pipeline_word_errors"] = None
-            st.session_state["status_result_df"] = None
-            st.session_state["status_export_df"] = None
-            st.session_state["status_invalid_df"] = None
-
-        # 3.4 Procesar todos los PDF's
-        render_simple_step_header("2", "Procesar todos los PDF's")  # ✅ Paso 2
-
-        progress_bar = st.empty()
-        status_text = st.empty()
-
-        auto_trigger = not st.session_state.get("pipeline_pdf_done", False)
-        manual_click = st.button(
-            "🚀 Procesar todos los PDF's",
-            type="primary",
-            key="pipeline_btn_pdf_process",
-        )
-
-        if auto_trigger or manual_click:
-            if fitz is None or Document is None:
-                st.error(
-                    "Faltan dependencias para este paso.\n\n"
-                    "- Instala `pymupdf` (fitz)\n"
-                    "- Instala `python-docx`"
-                )
-            else:
-                try:
-                    progress_bar.progress(0.0)
-                    status_text.markdown("Iniciando procesamiento de PDFs...")
-
-                    with st.spinner("Extrayendo texto y generando archivos Word..."):
-                        resultados, errores, zip_bytes = _run_pdf_extraction_streamlit(
-                            all_pdfs,
-                            usar_multihilo=True,
-                            max_workers=4,
-                            progress_bar=progress_bar,
-                            status_text=status_text,
-                        )
-
-                    # Guardar en session_state (compatibilidad y pipeline)
-                    st.session_state["pipeline_pdf_results"] = resultados
-                    st.session_state["pipeline_pdf_errors"] = errores
-                    st.session_state["extraccion_resultados"] = resultados
-                    st.session_state["extraccion_errores"] = errores
-                    st.session_state["extraccion_zip_bytes"] = zip_bytes
-
-                    # Construir DOCX en memoria para siguiente paso
-                    word_docs: List[InMemoryUploadedDOCX] = []
-                    for r in resultados:
-                        out_path = r.get("output")
-                        if not out_path:
-                            continue
-                        try:
-                            if os.path.exists(out_path):
-                                with open(out_path, "rb") as fh:
-                                    data = fh.read()
-                                word_docs.append(
-                                    InMemoryUploadedDOCX(Path(out_path).name, data)
-                                )
-                        except Exception as e:
-                            logger.error(f"Error leyendo DOCX generado '{out_path}': {e}")
-
-                    st.session_state["pipeline_word_docs"] = word_docs
-                    st.session_state["pipeline_pdf_done"] = True
-
-                    progress_bar.empty()
-                    status_text.markdown("✅ Procesamiento de PDFs completado.")
-
-                    total_ok = len(resultados)
-                    total_err = len(errores)
-                    total_files = total_ok + total_err
-                    total_pag = sum(
-                        r.get("stats", {}).get("paginas_procesadas", 0)
-                        for r in resultados
-                        if r.get("stats")
-                    )
-
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Archivos procesados", total_files)
-                    m2.metric("Completados", total_ok)
-                    m3.metric("Errores", total_err)
-
-                    if total_pag:
-                        st.caption(f"Páginas totales procesadas: **{total_pag}**")
-
-                    with st.expander("📊 Detalle de procesamiento de PDFs", expanded=False):
-                        filas = []
-                        for r in resultados:
-                            filas.append(
-                                {
-                                    "Archivo": Path(r.get("file", "")).name,
-                                    "Páginas": r.get("stats", {}).get("paginas_procesadas", 0),
-                                    "Estado": "COMPLETADO",
-                                    "Salida (Word)": Path(r.get("output", "")).name,
-                                }
-                            )
-                        for e in errores:
-                            filas.append(
-                                {
-                                    "Archivo": Path(e.get("file", "")).name,
-                                    "Páginas": None,
-                                    "Estado": "ERROR",
-                                    "Salida (Word)": "",
-                                }
-                            )
-                        if filas:
-                            df_res = pd.DataFrame(filas)
-                            st.dataframe(df_res, use_container_width=True, height=300)
-                        else:
-                            st.write("No hay resultados para mostrar.")
-
-                except Exception as e:
-                    progress_bar.empty()
-                    status_text.empty()
-                    st.error(f"Ocurrió un error durante el procesamiento de PDFs: {e}")
-        else:
-            # Ya procesado: mostrar resumen sin reprocesar
-            resultados = st.session_state.get("pipeline_pdf_results") or []
-            errores = st.session_state.get("pipeline_pdf_errors") or []
-            if resultados or errores:
-                total_ok = len(resultados)
-                total_err = len(errores)
-                total_files = total_ok + total_err
-                total_pag = sum(
-                    r.get("stats", {}).get("paginas_procesadas", 0)
-                    for r in resultados
-                    if r.get("stats")
-                )
-
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Archivos procesados", total_files)
-                m2.metric("Completados", total_ok)
-                m3.metric("Errores", total_err)
-
-                if total_pag:
-                    st.caption(f"Páginas totales procesadas: **{total_pag}**")
-
-                with st.expander("📊 Detalle de procesamiento de PDFs", expanded=False):
-                    filas = []
-                    for r in resultados:
-                        filas.append(
-                            {
-                                "Archivo": Path(r.get("file", "")).name,
-                                "Páginas": r.get("stats", {}).get("paginas_procesadas", 0),
-                                "Estado": "COMPLETADO",
-                                "Salida (Word)": Path(r.get("output", "")).name,
-                            }
-                        )
-                    for e in errores:
-                        filas.append(
-                            {
-                                "Archivo": Path(e.get("file", "")).name,
-                                "Páginas": None,
-                                "Estado": "ERROR",
-                                "Salida (Word)": "",
-                            }
-                        )
-                    if filas:
-                        df_res = pd.DataFrame(filas)
-                        st.dataframe(df_res, use_container_width=True, height=300)
-                    else:
-                        st.write("No hay resultados para mostrar.")
-            else:
-                st.info("Cuando subas PDFs el procesamiento se ejecutará automáticamente.")
-
-        ui_card_close()
-
-    # ======================================================
-    # 3.6 Report Word Link (Excel) – Word → links
+    # 3. Report Word Link (Word → Links)
     # ======================================================
     render_hero(
         "Report Word Link (Excel)",
@@ -4312,7 +3633,7 @@ def page_report_broken_unificado():
     step_word1 = st.empty()
     step_word1.markdown(
         render_step_header_html(
-            "3",  # ✅ Paso 3
+            "6",
             "Agregar documentos Word's (directos o desde ZIP)",
             "ok" if docs else "warn",
         ),
@@ -4325,12 +3646,12 @@ def page_report_broken_unificado():
         )
         ui_card_close()
     else:
-        # Sin numeración en el expander para evitar romper la secuencia global
         with st.expander("Documentos Word generados", expanded=False):
             df_files = _build_word_file_table(docs)
             st.dataframe(df_files, use_container_width=True, height=260)
 
-        render_simple_step_header("4", "Procesar todos los documentos Word's")  # ✅ Paso 4
+        # Procesar Word (Paso 7)
+        render_simple_step_header("7", "Procesar todos los documentos Word's")
 
         progress_bar_word = st.empty()
         status_text_word = st.empty()
@@ -4381,11 +3702,6 @@ def page_report_broken_unificado():
                     else:
                         st.write("No se detectaron links en los documentos analizados.")
 
-                if errores:
-                    with st.expander("⚠️ Errores al procesar algunos documentos", expanded=False):
-                        df_err = pd.DataFrame(errores)
-                        st.dataframe(df_err, use_container_width=True, height=220)
-
             except Exception as e:
                 progress_bar_word.empty()
                 status_text_word.empty()
@@ -4417,7 +3733,7 @@ def page_report_broken_unificado():
         ui_card_close()
 
     # ======================================================
-    # 3.10 Report Broken Link (Excel) – Validación
+    # 4. Report Broken Link (Excel → Status)
     # ======================================================
     render_hero(
         "Report Broken Link (Excel)",
@@ -4425,7 +3741,7 @@ def page_report_broken_unificado():
         "🧭",
     )
 
-    # 3.11 / 3.12: Cargar reporte (desde el paso anterior) + Detalle de Links
+    # 4.1 / 4.2: Cargar reporte (desde el paso anterior) + Detalle de Links
     ui_card_open()
     step_excel1 = st.empty()
     df_links = st.session_state.get("pipeline_df_links")
@@ -4434,8 +3750,8 @@ def page_report_broken_unificado():
 
     step_excel1.markdown(
         render_step_header_html(
-            "5",  # ✅ Paso 5
-            "Cargar Archivo Excel - Reporte Link",
+            "8",
+            "Procesar Reporte Link (desde documentos Word)",
             "ok" if has_links else "warn",
         ),
         unsafe_allow_html=True,
@@ -4443,7 +3759,7 @@ def page_report_broken_unificado():
 
     if not has_links:
         st.caption(
-            "Primero procesa los documentos Word en el paso anterior para generar el reporte de links."
+            "Primero procesa los documentos Word en el paso 7 para generar el reporte de links."
         )
         ui_card_close()
         return
@@ -4451,7 +3767,6 @@ def page_report_broken_unificado():
     df_in = df_links.copy()
     df_in["Fila_Excel"] = range(2, 2 + len(df_in))
 
-    # Parametrizaciones internas (no se muestran)
     default_scheme = "https"
     allow_mailto = False
     allow_tel = False
@@ -4465,7 +3780,6 @@ def page_report_broken_unificado():
         default_scheme=default_scheme,
     )
 
-    # Estado para el motor de validación
     st.session_state.status_input_filename = "Reporte_Link_Automatizado"
     st.session_state.status_input_df = df_in
     st.session_state.status_links_list = links_with_rows
@@ -4485,9 +3799,9 @@ def page_report_broken_unificado():
 
     ui_card_close()
 
-    # 3.13 / 3.14 / 3.15 / 3.16: Procesar Reporte Link
+    # 4.3 Procesar Reporte Link (Paso 8)
     ui_card_open()
-    render_simple_step_header("6", "Procesar Reporte Link")  # ✅ Paso 6
+    render_simple_step_header("9", "Procesar y Descargar Status Reporte (Excel)")
 
     if not _httpx_available_or_warn():
         ui_card_close()
@@ -4498,7 +3812,6 @@ def page_report_broken_unificado():
         ui_card_close()
         return
 
-    # Configuración de validación oculta (se usan valores por defecto)
     concurrency_global = DEFAULT_CONCURRENCY_GLOBAL
     concurrency_per_host = DEFAULT_CONCURRENCY_PER_HOST
     timeout_s = DEFAULT_TIMEOUT_S
@@ -4534,7 +3847,6 @@ def page_report_broken_unificado():
             progress_bar.progress(0.0)
             status_text.markdown("Iniciando verificación con motor V5...")
 
-            # Validación de links
             if len(links_with_rows) > 0:
                 with st.spinner(
                     "Validando enlaces (scoring, dominios especiales, soft-404 mejorado)..."
@@ -4572,11 +3884,12 @@ def page_report_broken_unificado():
                     ]
                 )
 
-            # Links inválidos → Status=INVALIDO
-            df_invalid_ready: Optional[pd.DataFrame] = st.session_state.get("status_invalid_df")
-            if df_invalid_ready is not None and not df_invalid_ready.empty:
+            # --- 1) Construir filas para links inválidos (si los hay) ---
+            df_invalid_ready = st.session_state.get("status_invalid_df")
+            if isinstance(df_invalid_ready, pd.DataFrame) and not df_invalid_ready.empty:
                 now_str_invalid = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 invalid_rows: List[Dict[str, Any]] = []
+
                 for _, inv in df_invalid_ready.iterrows():
                     invalid_rows.append(
                         {
@@ -4615,33 +3928,81 @@ def page_report_broken_unificado():
 
                 df_out = pd.concat([df_out, df_invalid_status], ignore_index=True, sort=False)
 
-            # Metadatos (Archivo, Página/Diapositiva)
+            # --- 2) Añadir SIEMPRE metadatos del reporte de links (Word → Links) ---
             df_src = df_in.copy()
             meta_cols: List[str] = []
             if "Nombre del Archivo" in df_src.columns:
                 meta_cols.append("Nombre del Archivo")
             if "Página/Diapositiva" in df_src.columns:
                 meta_cols.append("Página/Diapositiva")
+            # conservar también la URL origen del documento (PDF descargado)
+            if "source_url" in df_src.columns:
+                meta_cols.append("source_url")
 
             if meta_cols:
                 df_meta = df_src[["Fila_Excel"] + meta_cols]
                 df_out = df_out.merge(df_meta, on="Fila_Excel", how="left")
+
+            # --- 3) Enriquecer con name y link_class desde el Excel de URLs (si existe) ---
+            bulk_df = st.session_state.get("bulk_excel_df")
+            if isinstance(bulk_df, pd.DataFrame) and "url" in bulk_df.columns:
+                cols_to_add: List[str] = []
+                if "name" in bulk_df.columns:
+                    cols_to_add.append("name")
+                if "link_class" in bulk_df.columns:
+                    cols_to_add.append("link_class")
+
+                if cols_to_add and "source_url" in df_out.columns:
+                    df_bulk = bulk_df[["url"] + cols_to_add].copy()
+                    df_out = df_out.merge(
+                        df_bulk,
+                        left_on="source_url",
+                        right_on="url",
+                        how="left",
+                    )
+                    # ya no necesitamos la columna 'url' del Excel origen
+                    if "url" in df_out.columns:
+                        df_out = df_out.drop(columns=["url"])
+
+            # --- 4) Asegurar existencia de columnas name / link_class aunque no haya Excel ---
+            for col_extra in ("name", "link_class"):
+                if col_extra not in df_out.columns:
+                    df_out[col_extra] = ""
+
+
+
+            # --- 5) Rellenar 'name' con el nombre del ZIP/PDF para archivos cargados manualmente ---
+            # Regla: si 'name' está vacío y 'source_url' NO parece una URL (no contiene "://"),
+            # usamos 'source_url' como nombre lógico del archivo (ZIP o PDF manual).
+            if "name" in df_out.columns and "source_url" in df_out.columns:
+                # Aseguramos que sean cadenas para aplicar condiciones
+                src_series = df_out["source_url"].astype(str)
+                name_series = df_out["name"].astype(str)
+
+                mask_manual_file = (
+                    src_series.notna()
+                    & src_series.str.strip().ne("")         # source_url no vacío
+                    & ~src_series.str.contains("://", regex=False)  # no es una URL http(s)
+                    & (name_series.str.strip() == "")       # name está vacío
+                )
+
+                if mask_manual_file.any():
+                    df_out.loc[mask_manual_file, "name"] = src_series[mask_manual_file].apply(
+                        lambda s: Path(s).name  # sólo nombre de archivo (ej. MiZIP.zip)
+                    )
 
             if "Fila_Excel" in df_out.columns:
                 df_out = df_out.sort_values(["Fila_Excel", "Status"]).reset_index(drop=True)
             else:
                 df_out = df_out.reset_index(drop=True)
 
-            # Tipo_Problema
             try:
                 df_out["Tipo_Problema"] = df_out.apply(_infer_tipo_problema, axis=1)
             except Exception:
                 df_out["Tipo_Problema"] = ""
 
-            # Estandarizar Status (REDIRECT→ACTIVO, ERROR/INVALIDO→ROTO)
             df_out = _standardize_status_column(df_out)
 
-            # DataFrame de exportación
             df_export = df_out.copy()
             if "Nombre del Archivo" in df_export.columns:
                 df_export = df_export.rename(columns={"Nombre del Archivo": "Archivo"})
@@ -4669,18 +4030,13 @@ def page_report_broken_unificado():
         else:
             st.info("Aún no se ha ejecutado la validación de links.")
 
-    ui_card_close()
-
-    # 3.17 Descargar Status Reporte (Excel)
-    ui_card_open()
-    render_simple_step_header("7", "Descargar Status Reporte (Excel)")  # ✅ Paso 7
-
+    # 4.4 Descargar Status (Excel) - dentro del mismo bloque (Paso 9)
     df_ready: Optional[pd.DataFrame] = st.session_state.get("status_export_df")
     if df_ready is None:
         df_ready = st.session_state.get("status_result_df")
 
     if df_ready is None or df_ready.empty:
-        st.warning("Primero ejecuta el paso 6 para generar el status.")
+        st.warning("Primero ejecuta la validación para generar el status.")
         ui_card_close()
         return
 
@@ -4698,11 +4054,8 @@ def page_report_broken_unificado():
             file_name=out_xlsx,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-    # with colD2:
-    #     st.info("El Excel incluye la hoja **Status** con las columnas solicitadas.")
 
     ui_card_close()
-
 
 # ======================================================
 # MAIN
@@ -4747,17 +4100,15 @@ def main():
 
     if module == "Home":
         page_home()
-    elif module == "Bulk Download":
-        page_descarga_masiva()
     elif module == "Report Broken Link":
         page_report_broken_unificado()
     else:
         render_hero(title=module, subtitle="Módulo no encontrado.", icon="⚠️")
         st.error("Módulo seleccionado no existe.")
 
-
 if __name__ == "__main__":
     main()
+
 
 
 
