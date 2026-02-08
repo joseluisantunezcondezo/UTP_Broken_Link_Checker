@@ -325,15 +325,12 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
 }
 
 # ======================================================
-# PATRONES DE SOFT-404 MEJORADOS (V5)
-# ======================================================
-
-# ======================================================
 # PATRONES DE SOFT-404 MEJORADOS (V5) - REFORZADO
 # ======================================================
 
 # Patrones muy específicos que indican con alta confianza que la página
 # no existe o el recurso ya no está disponible (soft-404).
+
 SOFT_404_STRONG_PATTERNS = [
     # Inglés
     r"\b404\s+error\b",
@@ -345,7 +342,7 @@ SOFT_404_STRONG_PATTERNS = [
     r"the\s+page\s+you.*(?:requested|looking\s+for).*not\s+found",
     r"sorry.*page.*doesn't\s+exist",
 
-    # 🔴 NUEVO: muy típico de Apache / Google / otros
+    # Muy típico de servidores Apache / Google / otros
     r"the\s+requested\s+url\s+was\s+not\s+found\s+on\s+this\s+server",
     r"la\s+url\s+solicitada\s+no\s+se\s+ha\s+encontrado\s+en\s+este\s+servidor",
     r"no\s+se\s+ha\s+encontrado\s+la\s+url\s+solicitada",
@@ -376,10 +373,15 @@ SOFT_404_STRONG_PATTERNS = [
     r"esta\s+cuenta\s+no\s+existe",
     r"la\s+cuenta\s+no\s+existe",
     r"esta\s+p[aá]gina\s+no\s+existe\.\s*intenta\s+hacer\s+otra\s+b[uú]squeda",
+
+    # 🔴 NUEVO: páginas anti-bot / JavaScript deshabilitado (como gob.pe)
+    r"javascript\s+is\s+disabled",
+    r"enable\s+javascript\s+and\s+then\s+reload\s+the\s+page",
+    r"we\s+need\s+to\s+verify\s+that\s+you(?:'|’)?re\s+not\s+a\s+robot",
+    r"this\s+requires\s+javascript",
 ]
 
 SOFT_404_STRONG_RE = re.compile("|".join(SOFT_404_STRONG_PATTERNS), re.IGNORECASE)
-
 
 # Patrones que indican contenido real (artículo, post, etc.)
 VALID_CONTENT_PATTERNS = [
@@ -1453,20 +1455,13 @@ def _is_suspicious_redirect_to_root(original_url: str, final_url: str) -> bool:
 
     return False
 
-
 def _soft_404_detect_v5(body_text: str, url: str) -> Tuple[bool, int]:
     """
     Detección reforzada de soft-404:
 
-    1) Primero aplica patrones fuertes (SOFT_404_STRONG_RE) que indican
-       claramente que el recurso no existe o no es accesible:
-       - YouTube: "Video no disponible", "Este video es privado", etc.
-       - X: "Esta página no existe. Intenta hacer otra búsqueda."
-       - Otros mensajes típicos de "page not found".
-
-    2) Si no hay patrón fuerte, usa el score heurístico de
-       `_calculate_content_score`. Un score muy negativo se interpreta
-       como soft-404 genérico.
+    1) Patrones fuertes (SOFT_404_STRONG_RE) → error casi seguro.
+    2) Páginas HTML muy pequeñas sin señales de contenido real.
+    3) Score heurístico general (penaliza mensajes de error y textos muy cortos).
     """
     if not body_text:
         return False, 0
@@ -1478,14 +1473,25 @@ def _soft_404_detect_v5(body_text: str, url: str) -> Tuple[bool, int]:
     if SOFT_404_STRONG_RE.search(chunk):
         return True, 95
 
-    # 2) Score heurístico (penaliza SOFT_404_RE, textos muy cortos, etc.)
+    # 2) Páginas muy pequeñas sin señales de contenido real
+    content_len = len(body_text)
+    if (
+        content_len < 800                      # HTML muy corto
+        and not VALID_CONTENT_RE.search(chunk) # sin <article>, <main>, og:*, etc.
+        and not _is_trusted_domain(url)        # solo si NO está en lista blanca
+    ):
+        # Típico de páginas de error minimalistas o respuestas anti-bot
+        return True, 80
+
+    # 3) Score heurístico (penaliza SOFT_404_RE, textos muy cortos, etc.)
     score = _calculate_content_score(body_text, url)
 
-    # Score muy negativo => consideramos soft-404
-    if score < -10:
+    # Umbral ligeramente más estricto (antes era score < -10)
+    if score <= -10:
         return True, min(90, abs(score))
 
     return False, 0
+
 
 def _classify_v5(
     url: str,
@@ -4563,6 +4569,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
