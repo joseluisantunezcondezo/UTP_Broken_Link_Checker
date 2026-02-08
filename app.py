@@ -3003,7 +3003,6 @@ def _extract_urls_from_paragraph_xml(para, doc_part) -> List[str]:
 
     return urls
 
-
 def _extract_links_from_docx_bytes(docx_bytes: bytes, filename: str) -> List[Dict[str, Any]]:
     """
     Extrae todos los links de un DOCX, devolviendo filas:
@@ -3012,6 +3011,13 @@ def _extract_links_from_docx_bytes(docx_bytes: bytes, filename: str) -> List[Dic
         "Página/Diapositiva": <número de página estimado>,
         "Links": <url>
     }
+
+    Comportamiento:
+    - Si un mismo enlace aparece varias veces en PÁRRAFOS distintos o en PÁGINAS distintas,
+      se generará una fila por cada aparición real.
+    - Si el mismo enlace se detecta dos veces dentro del MISMO párrafo (por ejemplo
+      como texto visible y como hipervínculo interno de Word), se mantiene una sola
+      fila para evitar duplicados "falsos".
     """
     if Document is None:
         return []
@@ -3025,24 +3031,31 @@ def _extract_links_from_docx_bytes(docx_bytes: bytes, filename: str) -> List[Dic
         return []
 
     rows: List[Dict[str, Any]] = []
-    seen: set[Tuple[int, str]] = set()
 
     for page_idx, para in _iter_paragraphs_with_page(doc):
-        # 1) URLs por texto plano (visible en el párrafo)
+        # 1) URLs visibles en el texto del párrafo
         urls_text = _extract_urls_from_text(para.text or "")
 
-        # 2) URLs por estructura XML (hyperlinks, campos HYPERLINK)
+        # 2) URLs a nivel XML (w:hyperlink, campos HYPERLINK)
         urls_xml = _extract_urls_from_paragraph_xml(para, doc.part)
 
-        all_urls = urls_text + urls_xml
+        # 🔁 NUEVO: unificar y eliminar duplicados SOLO dentro del mismo párrafo
+        #    (caso típico: mismo enlace como texto + como hipervínculo interno)
+        all_urls: List[str] = []
+        seen = set()
 
+        for u in urls_text + urls_xml:
+            u_clean = (u or "").strip()
+            if not u_clean:
+                continue
+            if u_clean in seen:
+                # ya se contó este link en este párrafo → no duplicar
+                continue
+            seen.add(u_clean)
+            all_urls.append(u_clean)
+
+        # 3) Registrar filas (una por cada enlace distinto dentro del párrafo)
         for url in all_urls:
-            if not url:
-                continue
-            key = (page_idx, url)
-            if key in seen:
-                continue
-            seen.add(key)
             rows.append(
                 {
                     "Nombre del Archivo": filename,
@@ -3124,10 +3137,8 @@ def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dic
         "Links": <url>
     }
 
-    Se combinan:
-    - hipervínculos de texto (runs con hyperlink.address)
-    - acciones de clic de forma (shape.click_action.hyperlink.address)
-    - URLs en texto plano detectadas por regex (_extract_urls_from_text)
+    NO se eliminan duplicados: cada aparición del enlace en la diapositiva
+    genera una fila.
     """
     if Presentation is None:
         logger.warning("No se puede procesar PPTX porque falta la librería `python-pptx`.")
@@ -3144,10 +3155,11 @@ def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dic
     rows: List[Dict[str, Any]] = []
 
     for slide_index, slide in enumerate(prs.slides, start=1):
-        urls_en_diapositiva: set[str] = set()
+        # 🔴 Cambiamos set() por lista normal: NO eliminamos duplicados
+        urls_en_diapositiva: List[str] = []
 
         for shape in slide.shapes:
-            # 1) Hipervínculos asociados a acciones de clic de la forma
+            # 1) Hipervínculos asociados a la acción de clic de la forma
             try:
                 click_action = getattr(shape, "click_action", None)
                 if click_action is not None:
@@ -3155,11 +3167,11 @@ def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dic
                     if hlink is not None and getattr(hlink, "address", None):
                         addr = str(hlink.address).strip()
                         if addr:
-                            urls_en_diapositiva.add(addr)
+                            urls_en_diapositiva.append(addr)
             except Exception:
                 pass
 
-            # 2) Texto del shape (hipervínculos de runs y URLs visibles)
+            # 2) Texto del shape (runs con hyperlink + URLs visibles en el texto)
             text_for_plain = ""
             try:
                 if hasattr(shape, "has_text_frame") and shape.has_text_frame:
@@ -3172,15 +3184,19 @@ def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dic
                             if h is not None and getattr(h, "address", None):
                                 addr = str(h.address).strip()
                                 if addr:
-                                    urls_en_diapositiva.add(addr)
+                                    urls_en_diapositiva.append(addr)
             except Exception:
                 pass
 
+            # 3) URLs detectadas por regex en el texto plano
             if text_for_plain:
                 for u in _extract_urls_from_text(text_for_plain):
-                    urls_en_diapositiva.add(u)
+                    urls_en_diapositiva.append(u)
 
-        for url in sorted(urls_en_diapositiva):
+        # 🔴 NO usar set() ni sorted(): respetamos todas las apariciones
+        for url in urls_en_diapositiva:
+            if not url:
+                continue
             rows.append(
                 {
                     "Nombre del Archivo": filename,
@@ -4547,6 +4563,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
