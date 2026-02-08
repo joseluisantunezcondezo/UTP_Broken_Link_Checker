@@ -4528,11 +4528,10 @@ def main():
         with st.expander("Recomendaciones"):
             st.markdown(
                 """
-                - Se recomienda en el proceso "1" descargar de forma masiva entre 400 - 500 documentos/registros como límite máximo..  
-                - Para más de 500 documentos/registros, lo recomendable es:  
-                    Ejecutar el app en local.
-                    Dividir el Excel de Url en varios archivos (por ejemplo bloques de 500 registros) y procesarlos por partes.  
-                - Esto para evitar que el contenedor de Streamlit Cloud se quede sin memoria (~1 GB de RAM) 
+                - Se recomienda en el proceso "1" descargar de forma masiva entre **400 - 500** registros como máximo.  
+                - Para más de **500** registros, lo recomendable es:  
+                    Ejecutar el app en local o dividir el Excel de Url en varios archivos (por ejemplo bloques de 500 registros) y procesarlos por partes.  
+                - Esto para evitar que el contenedor de **Streamlit Cloud** se quede sin memoria (~1 GB de RAM) 
                 """
             )
 
@@ -4548,6 +4547,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
