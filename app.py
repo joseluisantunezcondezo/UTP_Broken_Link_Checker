@@ -19,7 +19,7 @@ import zipfile
 import io
 
 # =========================
-# Dependencias PDF / Word
+# Dependencias PDF / Word / PPT
 # =========================
 try:
     import fitz  # PyMuPDF
@@ -30,6 +30,12 @@ try:
     from docx import Document
 except ImportError:  # pragma: no cover
     Document = None  # type: ignore
+
+# 🔹 NUEVO: PPTX
+try:
+    from pptx import Presentation
+except ImportError:  # pragma: no cover
+    Presentation = None  # type: ignore
 
 # =========================
 # Dependencia para Descarga Masiva
@@ -809,6 +815,38 @@ def apply_global_styles():
             transform: translateY(-1px);
             box-shadow: 0 16px 32px rgba(15,23,42,0.55);
         }
+        /* 🔵 Barra de progreso tipo "task" (progress-bar-ui-task) */
+        .progress-bar-ui-task {
+            width: 100%;
+            height: 24px;
+            border-radius: 999px;
+            background: #e0f2fe; /* azul muy claro */
+            box-shadow: inset 0 0 0 1px rgba(37,99,235,0.18);
+            overflow: hidden;
+            position: relative;
+            margin: 0.35rem 0 0.15rem 0;
+        }
+
+        .progress-bar-ui-task__inner {
+            position: relative;
+            height: 100%;
+            width: 0%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #0ea5e9 0%, #2563eb 60%, #1d4ed8 100%);
+            display: flex;
+            align-items: center;
+            transition: width 0.25s ease-out;
+        }
+
+        .progress-bar-ui-task__label {
+            padding-left: 0.9rem;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #ffffff;
+            letter-spacing: 0.03em;
+            white-space: nowrap;
+            text-shadow: 0 1px 2px rgba(15,23,42,0.35);
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -880,6 +918,44 @@ def ui_card_open():
 
 def ui_card_close():
     st.markdown("</div>", unsafe_allow_html=True)
+
+def render_progress_bar_ui_task(placeholder, progress: float, label: Optional[str] = None):
+    """
+    Renderiza una barra tipo 'progress-bar-ui-task' dentro de un placeholder de Streamlit.
+
+    - `progress` puede venir en rango 0–1 (0.0 = 0%, 1.0 = 100%)
+      o 0–100 (60 = 60%).
+    """
+    if placeholder is None:
+        return
+
+    try:
+        value = float(progress)
+    except (TypeError, ValueError):
+        value = 0.0
+
+    # Aceptar tanto 0–1 como 0–100
+    if value > 1.0:
+        if value <= 100.0:
+            value = value / 100.0
+        else:
+            value = 1.0
+    value = max(0.0, min(1.0, value))
+
+    percent_str = f"{value * 100:.1f}%"
+    label_text = label or percent_str
+
+    placeholder.markdown(
+        f"""
+        <div class="progress-bar-ui-task">
+            <div class="progress-bar-ui-task__inner" style="width: {value * 100:.4f}%;">
+                <span class="progress-bar-ui-task__label">{label_text}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 def _style_status_dataframe(df: pd.DataFrame):
     """
@@ -981,9 +1057,13 @@ def init_session_state():
     st.session_state.setdefault("pipeline_pdf_errors", None)
 
     st.session_state.setdefault("pipeline_word_docs", None)
+    st.session_state.setdefault("pipeline_ppt_docs", None)
     st.session_state.setdefault("pipeline_word_done", False)
     st.session_state.setdefault("pipeline_df_links", None)
     st.session_state.setdefault("pipeline_word_errors", None)
+
+    st.session_state.setdefault("pipeline_word_inputs_count", 0) 
+    st.session_state.setdefault("pipeline_ppt_inputs_count", 0)  
 
     st.session_state.setdefault("pipeline_status_done", False)
 
@@ -1025,6 +1105,10 @@ def reset_report_broken_pipeline():
         "pipeline_df_links",
         "pipeline_word_errors",
         "reporte_links_df",
+        "pipeline_ppt_docs",
+        "pipeline_word_inputs_count",
+        "pipeline_ppt_inputs_count",
+
 
         # 🔹 4) Report Broken Link (validación de links, pasos 8–9)
         "pipeline_status_done",
@@ -2591,11 +2675,12 @@ def _run_descarga_masiva_streamlit(
         speed = processed / elapsed if elapsed > 0 else 0.0
         eta = (total - processed) / speed if speed > 0 else 0.0
 
-        progress_bar.progress(pct)
+        render_progress_bar_ui_task(progress_bar, pct)
         progress_text.markdown(
             f"Descargando Archivos {pct*100:.1f}% | {processed}/{total} "
             f"[{_format_hms(elapsed)}<{_format_hms(eta)}, {speed:.2f} archivo/s]"
         )
+
 
     # CSV de fallidos dentro del ZIP, si hay
     csv_fallidos_path = None
@@ -2660,6 +2745,19 @@ class InMemoryUploadedDOCX:
     def getbuffer(self):
         return self._data
 
+class InMemoryUploadedPPTX:
+    """
+    Wrapper en memoria para tratar PPTX (directos o desde ZIP / Descarga Masiva)
+    de forma similar a los UploadedFile de Streamlit.
+    """
+
+    def __init__(self, name: str, data: bytes, source_url: Optional[str] = None):
+        self.name = name
+        self._data = data
+        self.source_url = source_url
+
+    def getbuffer(self):
+        return self._data
 
 
 # ======================================================
@@ -2686,6 +2784,20 @@ def _build_pdf_file_table(uploaded_pdfs: List["st.runtime.uploaded_file_manager.
 
 def _build_word_file_table(uploaded_docs: List["st.runtime.uploaded_file_manager.UploadedFile"]) -> pd.DataFrame:
     """Resumen (nombre, tamaño) de DOCX subidos."""
+    rows = []
+    for f in uploaded_docs:
+        data = f.getbuffer()
+        size_mb = len(data) / (1024 * 1024)
+        rows.append(
+            {
+                "Nombre": f.name,
+                "Tamaño_MB": round(size_mb, 2),
+            }
+        )
+    return pd.DataFrame(rows)
+
+def _build_pptx_file_table(uploaded_docs: List["st.runtime.uploaded_file_manager.UploadedFile"]) -> pd.DataFrame:
+    """Resumen (nombre, tamaño) de PPTX subidos."""
     rows = []
     for f in uploaded_docs:
         data = f.getbuffer()
@@ -2988,7 +3100,7 @@ def _run_word_link_report_streamlit(
             logger.error(f"Error procesando Word {file_name}: {e}")
             errores.append({"Archivo": file_name, "Error": str(e)})
 
-        progress_bar.progress(idx / total_files)
+        render_progress_bar_ui_task(progress_bar, idx / total_files)
 
     if all_rows:
         df = pd.DataFrame(all_rows)
@@ -3003,6 +3115,144 @@ def _run_word_link_report_streamlit(
 
     return df, errores
 
+def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dict[str, Any]]:
+    """
+    Extrae todos los links de un PPTX, devolviendo filas:
+    {
+        "Nombre del Archivo": <nombre>,
+        "Página/Diapositiva": <número de diapositiva>,
+        "Links": <url>
+    }
+
+    Se combinan:
+    - hipervínculos de texto (runs con hyperlink.address)
+    - acciones de clic de forma (shape.click_action.hyperlink.address)
+    - URLs en texto plano detectadas por regex (_extract_urls_from_text)
+    """
+    if Presentation is None:
+        logger.warning("No se puede procesar PPTX porque falta la librería `python-pptx`.")
+        return []
+
+    from io import BytesIO
+
+    try:
+        prs = Presentation(BytesIO(pptx_bytes))
+    except Exception as e:
+        logger.error(f"Error abriendo PPTX {filename}: {e}")
+        return []
+
+    rows: List[Dict[str, Any]] = []
+
+    for slide_index, slide in enumerate(prs.slides, start=1):
+        urls_en_diapositiva: set[str] = set()
+
+        for shape in slide.shapes:
+            # 1) Hipervínculos asociados a acciones de clic de la forma
+            try:
+                click_action = getattr(shape, "click_action", None)
+                if click_action is not None:
+                    hlink = getattr(click_action, "hyperlink", None)
+                    if hlink is not None and getattr(hlink, "address", None):
+                        addr = str(hlink.address).strip()
+                        if addr:
+                            urls_en_diapositiva.add(addr)
+            except Exception:
+                pass
+
+            # 2) Texto del shape (hipervínculos de runs y URLs visibles)
+            text_for_plain = ""
+            try:
+                if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+                    text_for_plain = shape.text or ""
+
+                    text_frame = shape.text_frame
+                    for paragraph in text_frame.paragraphs:
+                        for run in paragraph.runs:
+                            h = getattr(run, "hyperlink", None)
+                            if h is not None and getattr(h, "address", None):
+                                addr = str(h.address).strip()
+                                if addr:
+                                    urls_en_diapositiva.add(addr)
+            except Exception:
+                pass
+
+            if text_for_plain:
+                for u in _extract_urls_from_text(text_for_plain):
+                    urls_en_diapositiva.add(u)
+
+        for url in sorted(urls_en_diapositiva):
+            rows.append(
+                {
+                    "Nombre del Archivo": filename,
+                    "Página/Diapositiva": str(slide_index),
+                    "Links": url,
+                }
+            )
+
+    return rows
+
+
+def _run_pptx_link_report_streamlit(
+    uploaded_pptx: List["InMemoryUploadedPPTX"],
+    *,
+    progress_bar,
+    status_text,
+) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
+    """
+    Recorre todos los PPTX subidos (directos o desde ZIP) y arma
+    un DataFrame con columnas:
+    - Nombre del Archivo
+    - Página/Diapositiva
+    - Links
+    - source_url (opcional, cuando proviene de Descarga Masiva)
+    """
+    if not uploaded_pptx:
+        empty_df = pd.DataFrame(
+            columns=["Nombre del Archivo", "Página/Diapositiva", "Links", "source_url"]
+        )
+        return empty_df, []
+
+    all_rows: List[Dict[str, Any]] = []
+    errores: List[Dict[str, Any]] = []
+
+    total_files = len(uploaded_pptx)
+    start_time = datetime.now()
+
+    for idx, up in enumerate(uploaded_pptx, start=1):
+        file_name = up.name
+        source_url = getattr(up, "source_url", None)
+
+        status_text.markdown(f"Analizando PPTX **{idx}/{total_files}** · `{file_name}`")
+        render_progress_bar_ui_task(progress_bar, (idx - 1) / total_files)
+
+        try:
+            data = up.getbuffer()
+            rows = _extract_links_from_pptx_bytes(bytes(data), file_name)
+
+            for r in rows:
+                r["source_url"] = source_url
+
+            all_rows.extend(rows)
+        except Exception as e:
+            logger.error(f"Error procesando PPTX {file_name}: {e}")
+            errores.append({"Archivo": file_name, "Error": str(e)})
+
+        render_progress_bar_ui_task(progress_bar, idx / total_files)
+
+    if all_rows:
+        df = pd.DataFrame(all_rows)
+        df = df.sort_values(
+            ["Nombre del Archivo", "Página/Diapositiva", "Links"]
+        ).reset_index(drop=True)
+    else:
+        df = pd.DataFrame(
+            columns=["Nombre del Archivo", "Página/Diapositiva", "Links", "source_url"]
+        )
+
+    elapsed = (datetime.now() - start_time).total_seconds()
+    logger.info("Análisis de PPTX completado en %.2fs", elapsed)
+
+    return df, errores
 
 def _run_pdf_extraction_streamlit(
     uploaded_pdfs: List["st.runtime.uploaded_file_manager.UploadedFile"],
@@ -3044,7 +3294,7 @@ def _run_pdf_extraction_streamlit(
         source_url = getattr(up, "source_url", None)
 
         status_text.markdown(f"Procesando **{idx}/{total_files}** · `{pdf_name}`")
-        progress_bar.progress((idx - 1) / total_files)
+        render_progress_bar_ui_task(progress_bar, (idx - 1) / total_files)
 
         # PDF temporal (puede seguir llevando el índice para evitar colisiones)
         safe_stem = Path(pdf_name).stem
@@ -3066,7 +3316,7 @@ def _run_pdf_extraction_streamlit(
         else:
             errores.append(result)
 
-        progress_bar.progress(idx / total_files)
+        render_progress_bar_ui_task(progress_bar, idx / total_files)
 
     elapsed = (datetime.now() - start_time).total_seconds()
     logger.info("Procesamiento PDFs completado en %.2fs", elapsed)
@@ -3318,8 +3568,9 @@ def page_report_broken_unificado():
 
     if urls_archivos_state and (auto_trigger_bulk or manual_click_bulk):
         try:
-            progress_bar_bulk.progress(0.0)
+            render_progress_bar_ui_task(progress_bar_bulk, 0.0)
             progress_text_bulk.markdown("Preparando descarga masiva...")
+
 
             with st.spinner("Descargando archivos..."):
                 resultados, fallidos, zip_bytes = _run_descarga_masiva_streamlit(
@@ -3379,16 +3630,16 @@ def page_report_broken_unificado():
 
     ui_card_close()
 
-    # ======================================================
-    # 2. PDF to Word Transformation (ZIP)
+     # ======================================================
+    # 2. PDF, WORD and PPT to Word Transformation (ZIP)
     # ======================================================
     render_hero(
-        "PDF to Word Transformation (ZIP)",
-        "Convierte múltiples PDFs a Word sin filtrar bibliografía y reordenando el texto.",
+        "PDF, WORD and PPT to Word Transformation (ZIP)",
+        "Convierte múltiples PDFs, Word y PPT a Word (texto) sin filtrar bibliografía y reordenando el texto.",
         "🧲",
     )
 
-    # Validar dependencias
+    # Validar dependencias básicas para este módulo
     if fitz is None or Document is None:
         ui_card_open()
         st.error(
@@ -3405,112 +3656,217 @@ def page_report_broken_unificado():
 
     pdf_uploader_key = f"pipeline_pdf_uploader_ultra_{st.session_state.get('pipeline_reset_token', 0)}"
     uploaded_files = st.file_uploader(
-        "Selecciona uno o más archivos PDF o ZIP (ZIP con PDFs en su interior)",
-        type=["pdf", "zip"],
+        "Selecciona uno o más archivos PDF, Word, PPT o ZIP (ZIP con PDFs/Word/PPT en su interior)",
+        type=["pdf", "docx", "pptx", "doc", "ppt", "zip"],
         accept_multiple_files=True,
         key=pdf_uploader_key,
-        help="Si ya ejecutaste la Descarga Masiva, aquí llegarán automáticamente los PDFs.",
+        help="Si ya ejecutaste la Descarga Masiva, aquí llegarán automáticamente los documentos.",
     )
 
     all_pdfs: List[Any] = []
+    all_word_docs: List[InMemoryUploadedDOCX] = []
+    all_pptx_docs: List["InMemoryUploadedPPTX"] = []
+    unsupported_office: List[Dict[str, str]] = []
 
-    # PDFs provenientes de Descarga Masiva (si existen)
+    # Documentos provenientes de Descarga Masiva (si existen)
     resultados_desc = st.session_state.get("descarga_resultados") or []
     for r in resultados_desc:
         ruta = r.get("ruta_archivo")
         if not ruta:
             continue
         ruta_str = str(ruta)
-        if not ruta_str.lower().endswith(".pdf"):
-            continue
+        ext = Path(ruta_str).suffix.lower()
+
         try:
             with open(ruta_str, "rb") as fh:
                 data = fh.read()
+        except Exception as e:
+            logger.warning(f"No se pudo leer archivo descargado '{ruta_str}': {e}")
+            continue
 
-            # 🔹 Guardamos también la URL origen del PDF (para enlazar con name / link_class)
-            source_url = r.get("url")
+        source_url = r.get("url")
+        file_name = Path(ruta_str).name
 
+        if ext == ".pdf":
             all_pdfs.append(
                 InMemoryUploadedPDF(
-                    Path(ruta_str).name,
+                    file_name,
                     data,
                     source_url=source_url,
                 )
             )
-        except Exception as e:
-            logger.warning(f"No se pudo leer PDF descargado '{ruta_str}': {e}")
+        elif ext == ".docx":
+            all_word_docs.append(
+                InMemoryUploadedDOCX(
+                    file_name,
+                    data,
+                    source_url=source_url,
+                )
+            )
+        elif ext == ".pptx":
+            if Presentation is not None:
+                all_pptx_docs.append(
+                    InMemoryUploadedPPTX(
+                        file_name,
+                        data,
+                        source_url=source_url,
+                    )
+                )
+            else:
+                unsupported_office.append(
+                    {
+                        "Archivo": file_name,
+                        "Motivo": "python-pptx no está instalado; no se pueden procesar PPTX descargados.",
+                    }
+                )
+        elif ext in (".doc", ".ppt"):
+            unsupported_office.append(
+                {
+                    "Archivo": file_name,
+                    "Motivo": f"Formato {ext} no soportado. Convierte a .docx o .pptx para poder analizar los links.",
+                }
+            )
 
-
-    # PDFs / ZIP subidos manualmente
+    # Documentos / ZIP subidos manualmente
     if uploaded_files:
         for f in uploaded_files:
             fname_lower = f.name.lower()
+            ext = Path(fname_lower).suffix.lower()
 
-            # 🆕 4.1 PDFs directos: también los envolvemos para poder llevar un "source_url"
-            if fname_lower.endswith(".pdf"):
+            # PDF directos
+            if ext == ".pdf":
                 all_pdfs.append(
                     InMemoryUploadedPDF(
-                        f.name,          # nombre visible del PDF
-                        f.getbuffer(),   # datos en memoria
-                        source_url=f.name,  # usamos el nombre del PDF como "source_url"
+                        f.name,
+                        f.getbuffer(),
+                        source_url=f.name,
                     )
                 )
 
-            # 🆕 4.2 ZIPs manuales: guardamos el nombre del ZIP como "source_url"
-            elif fname_lower.endswith(".zip"):
+            # Word (DOCX) directos
+            elif ext == ".docx":
+                all_word_docs.append(
+                    InMemoryUploadedDOCX(
+                        f.name,
+                        f.getbuffer(),
+                        source_url=f.name,
+                    )
+                )
+
+            # PPTX directos
+            elif ext == ".pptx":
+                if Presentation is not None:
+                    all_pptx_docs.append(
+                        InMemoryUploadedPPTX(
+                            f.name,
+                            f.getbuffer(),
+                            source_url=f.name,
+                        )
+                    )
+                else:
+                    unsupported_office.append(
+                        {
+                            "Archivo": f.name,
+                            "Motivo": "python-pptx no está instalado; no se pueden procesar PPTX subidos manualmente.",
+                        }
+                    )
+
+            # Formatos antiguos no soportados
+            elif ext in (".doc", ".ppt"):
+                unsupported_office.append(
+                    {
+                        "Archivo": f.name,
+                        "Motivo": f"Formato {ext} no soportado. Convierte a .docx o .pptx antes de cargarlo.",
+                    }
+                )
+
+            # ZIP con mezcla de documentos
+            elif ext == ".zip":
                 try:
                     zdata = io.BytesIO(f.getbuffer())
                     with zipfile.ZipFile(zdata, "r") as zf:
                         for info in zf.infolist():
                             if info.is_dir():
                                 continue
-                            if not info.filename.lower().endswith(".pdf"):
-                                continue
 
-                            pdf_bytes = zf.read(info)
-                            # Usar SOLO el nombre real del PDF dentro del ZIP
+                            inner_ext = Path(info.filename).suffix.lower()
                             inner_name = Path(info.filename).name
-                            safe_name = inner_name
+                            file_bytes = zf.read(info)
 
-                            # 🔹 Aquí el "source_url" será el NOMBRE DEL ZIP manual (lo que quieres ver en 'name')
-                            all_pdfs.append(
-                                InMemoryUploadedPDF(
-                                    safe_name,      # nombre del PDF dentro del ZIP
-                                    pdf_bytes,
-                                    source_url=f.name,  # <- NOMBRE DEL ZIP
+                            if inner_ext == ".pdf":
+                                all_pdfs.append(
+                                    InMemoryUploadedPDF(
+                                        inner_name,
+                                        file_bytes,
+                                        source_url=f.name,
+                                    )
                                 )
-                            )
+                            elif inner_ext == ".docx":
+                                all_word_docs.append(
+                                    InMemoryUploadedDOCX(
+                                        inner_name,
+                                        file_bytes,
+                                        source_url=f.name,
+                                    )
+                                )
+                            elif inner_ext == ".pptx":
+                                if Presentation is not None:
+                                    all_pptx_docs.append(
+                                        InMemoryUploadedPPTX(
+                                            inner_name,
+                                            file_bytes,
+                                            source_url=f.name,
+                                        )
+                                    )
+                                else:
+                                    unsupported_office.append(
+                                        {
+                                            "Archivo": inner_name,
+                                            "Motivo": "python-pptx no está instalado; no se pueden procesar PPTX dentro del ZIP.",
+                                        }
+                                    )
+                            elif inner_ext in (".doc", ".ppt"):
+                                unsupported_office.append(
+                                    {
+                                        "Archivo": inner_name,
+                                        "Motivo": f"Formato {inner_ext} no soportado. Convierte a .docx o .pptx para poder analizar los links.",
+                                    }
+                                )
                 except Exception as e:
                     st.warning(f"No se pudo leer el ZIP `{f.name}`: {e}")
 
-
-
-    has_pdfs = len(all_pdfs) > 0
+    has_docs = (len(all_pdfs) + len(all_word_docs) + len(all_pptx_docs)) > 0
 
     step_pdf1.markdown(
         render_step_header_html(
-            "4",  # Num secuencial
-            "Agregar PDF's (directos o desde ZIP)",
-            "ok" if has_pdfs else "warn",
+            "4",
+            "Agregar documentos (PDF, Word, PPT) directos o desde ZIP",
+            "ok" if has_docs else "warn",
         ),
         unsafe_allow_html=True,
     )
 
-    if not has_pdfs:
+    if not has_docs:
         st.caption(
-            "Agrega PDFs manualmente o ejecuta primero la Descarga Masiva para que lleguen aquí automáticamente."
+            "Agrega documentos manualmente o ejecuta primero la Descarga Masiva para que lleguen aquí automáticamente."
         )
         ui_card_close()
         return
 
-    # Firma de PDFs para controlar re-ejecuciones
+    # Firma de documentos para controlar re-ejecuciones
+    all_inputs_for_signature: List[Any] = []
+    all_inputs_for_signature.extend(all_pdfs)
+    all_inputs_for_signature.extend(all_word_docs)
+    all_inputs_for_signature.extend(all_pptx_docs)
+
     try:
         signature = sorted(
-            (f.name, len(f.getbuffer())) for f in all_pdfs  # type: ignore[attr-defined]
+            (getattr(f, "name", str(idx)), len(f.getbuffer()))
+            for idx, f in enumerate(all_inputs_for_signature)
         )
     except Exception:
         signature = sorted(
-            (getattr(f, "name", str(idx)), 0) for idx, f in enumerate(all_pdfs)
+            (getattr(f, "name", str(idx)), 0) for idx, f in enumerate(all_inputs_for_signature)
         )
 
     prev_sig = st.session_state.get("pipeline_pdf_signature")
@@ -3521,6 +3877,7 @@ def page_report_broken_unificado():
         st.session_state["pipeline_pdf_errors"] = None
 
         st.session_state["pipeline_word_docs"] = None
+        st.session_state["pipeline_ppt_docs"] = None
         st.session_state["pipeline_word_done"] = False
         st.session_state["pipeline_df_links"] = None
         st.session_state["pipeline_word_errors"] = None
@@ -3530,24 +3887,40 @@ def page_report_broken_unificado():
         st.session_state["status_export_df"] = None
         st.session_state["status_invalid_df"] = None
 
-    # 2. Archivos PDF seleccionados (expander sin numeración)
-    with st.expander("Archivos PDF's seleccionados", expanded=False):
-        df_files = _build_pdf_file_table(all_pdfs)
-        st.dataframe(df_files, use_container_width=True, height=260)
+    # Listado de archivos seleccionados
+    if all_pdfs:
+        with st.expander("Archivos PDF seleccionados", expanded=False):
+            df_files = _build_pdf_file_table(all_pdfs)
+            st.dataframe(df_files, use_container_width=True, height=260)
 
-    # 3. Opciones de procesamiento
+    if all_word_docs:
+        with st.expander("Archivos Word (DOCX) seleccionados", expanded=False):
+            df_files_word = _build_word_file_table(all_word_docs)
+            st.dataframe(df_files_word, use_container_width=True, height=260)
+
+    if all_pptx_docs:
+        with st.expander("Archivos PPTX seleccionados", expanded=False):
+            df_files_ppt = _build_pptx_file_table(all_pptx_docs)
+            st.dataframe(df_files_ppt, use_container_width=True, height=260)
+
+    if unsupported_office:
+        with st.expander("⚠️ Archivos Office no soportados", expanded=False):
+            df_unsup = pd.DataFrame(unsupported_office)
+            st.dataframe(df_unsup, use_container_width=True, height=260)
+
+    # Opciones de procesamiento (aplican solo a PDFs)
     with st.expander("Opciones de procesamiento de PDFs", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             usar_multihilo = st.toggle(
-                "Usar procesamiento paralelo por páginas",
+                "Usar procesamiento paralelo por páginas (solo PDFs)",
                 value=True,
                 help="Recomendado cuando los PDFs tienen muchas páginas.",
                 key="extr_usar_multihilo",
             )
         with col2:
             max_workers = st.number_input(
-                "Número máximo de workers",
+                "Número máximo de workers para PDFs",
                 min_value=1,
                 max_value=16,
                 value=4,
@@ -3555,125 +3928,193 @@ def page_report_broken_unificado():
                 key="extr_max_workers",
             )
 
-    # 4. Procesar todos los PDF's (Paso 5)
-    render_simple_step_header("5", "Procesar todos los PDF's")
+    # 4. Procesar todos los documentos (Paso 5)
+    render_simple_step_header("5", "Procesar todos los documentos (PDF, Word, PPT)")
 
     progress_bar_pdf = st.empty()
     status_text_pdf = st.empty()
 
     auto_trigger_pdf = not st.session_state.get("pipeline_pdf_done", False)
     manual_click_pdf = st.button(
-        "🚀 Procesar todos los PDF's",
+        "🚀 Procesar todos los documentos",
         type="primary",
         key="pipeline_btn_pdf_process",
     )
 
     if auto_trigger_pdf or manual_click_pdf:
         try:
-            progress_bar_pdf.progress(0.0)
-            status_text_pdf.markdown("Iniciando procesamiento de PDFs...")
+            render_progress_bar_ui_task(progress_bar_pdf, 0.0)
+            status_text_pdf.markdown("Iniciando procesamiento de documentos...")
 
-            with st.spinner("Extrayendo texto y generando archivos Word..."):
-                resultados, errores, zip_bytes = _run_pdf_extraction_streamlit(
-                    all_pdfs,
-                    usar_multihilo=bool(usar_multihilo),
-                    max_workers=int(max_workers),
-                    progress_bar=progress_bar_pdf,
-                    status_text=status_text_pdf,
-                )
 
-            st.session_state["pipeline_pdf_results"] = resultados
-            st.session_state["pipeline_pdf_errors"] = errores
-            st.session_state["extraccion_resultados"] = resultados
-            st.session_state["extraccion_errores"] = errores
-            st.session_state["extraccion_zip_bytes"] = zip_bytes
+            resultados_pdf: List[Dict[str, Any]] = []
+            errores_pdf: List[Dict[str, Any]] = []
+            zip_bytes_pdf: Optional[bytes] = None
+
+            # 1) PDFs → DOCX (texto)
+            if all_pdfs:
+                with st.spinner("Extrayendo texto y generando archivos Word desde PDFs..."):
+                    resultados_pdf, errores_pdf, zip_bytes_pdf = _run_pdf_extraction_streamlit(
+                        all_pdfs,
+                        usar_multihilo=bool(usar_multihilo),
+                        max_workers=int(max_workers),
+                        progress_bar=progress_bar_pdf,
+                        status_text=status_text_pdf,
+                    )
+            else:
+                status_text_pdf.markdown("No hay PDFs para procesar; se usarán solo Word/PPT existentes.")
+
+            # 2) DOCX generados desde PDFs + DOCX originales
+            word_docs_from_pdf = st.session_state.get("pipeline_word_docs") or []
+            if not isinstance(word_docs_from_pdf, list):
+                word_docs_from_pdf = []
+
+            combined_word_docs: List[InMemoryUploadedDOCX] = []
+            combined_word_docs.extend(word_docs_from_pdf)
+            combined_word_docs.extend(all_word_docs)
+
+            st.session_state["pipeline_word_docs"] = combined_word_docs
+            st.session_state["pipeline_ppt_docs"] = all_pptx_docs
+
+            # Guardar resultados en sesión
+            st.session_state["pipeline_pdf_results"] = resultados_pdf
+            st.session_state["pipeline_pdf_errors"] = errores_pdf
+            st.session_state["extraccion_resultados"] = resultados_pdf
+            st.session_state["extraccion_errores"] = errores_pdf
+            st.session_state["extraccion_zip_bytes"] = zip_bytes_pdf
             st.session_state["pipeline_pdf_done"] = True
+            st.session_state["pipeline_word_inputs_count"] = len(all_word_docs)
+            st.session_state["pipeline_ppt_inputs_count"] = len(all_pptx_docs)
 
             progress_bar_pdf.empty()
-            status_text_pdf.markdown("✅ Procesamiento de PDFs completado.")
+            status_text_pdf.markdown("✅ Procesamiento de documentos completado.")
         except Exception as e:
             progress_bar_pdf.empty()
             status_text_pdf.empty()
-            st.error(f"Ocurrió un error durante el procesamiento de PDFs: {e}")
+            st.error(f"Ocurrió un error durante el procesamiento de documentos: {e}")
     else:
-        resultados = st.session_state.get("pipeline_pdf_results") or []
-        errores = st.session_state.get("pipeline_pdf_errors") or []
-        if resultados or errores:
-            total_ok = len(resultados)
-            total_err = len(errores)
-            total_files = total_ok + total_err
+        resultados_pdf = st.session_state.get("pipeline_pdf_results") or []
+        errores_pdf = st.session_state.get("pipeline_pdf_errors") or []
+        word_count = st.session_state.get("pipeline_word_inputs_count", 0)
+        ppt_count = st.session_state.get("pipeline_ppt_inputs_count", 0)
+
+        if resultados_pdf or errores_pdf or word_count or ppt_count:
+            total_ok = len(resultados_pdf)
+            total_err = len(errores_pdf)
+            total_pdf_files = total_ok + total_err
             total_pag = sum(
                 r.get("stats", {}).get("paginas_procesadas", 0)
-                for r in resultados
+                for r in resultados_pdf
                 if r.get("stats")
             )
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Archivos procesados", total_files)
-            m2.metric("Completados", total_ok)
-            m3.metric("Errores", total_err)
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("PDF procesados", total_pdf_files)
+            m2.metric("PDF OK", total_ok)
+            m3.metric("PDF con error", total_err)
+            m4.metric("Word (DOCX) detectados", word_count)
+            m5.metric("PPTX detectados", ppt_count)
 
             if total_pag:
-                st.caption(f"Páginas totales procesadas: **{total_pag}**")
+                st.caption(f"Páginas totales procesadas en PDFs: **{total_pag}**")
 
     ui_card_close()
 
+
     # ======================================================
-    # 3. Report Word Link (Word → Links)
+    # 3. Report Word & PPT Link (Word / PPT → Links)
     # ======================================================
     render_hero(
-        "Report Word Link (Excel)",
-        "Genera un Excel con todos los Links detectados en documentos Word.",
+        "Report Word & PPT Link (Excel)",
+        "Genera un Excel con todos los links detectados en documentos Word y PPT.",
         "📊",
     )
 
     ui_card_open()
 
     docs = st.session_state.get("pipeline_word_docs") or []
+    ppt_docs = st.session_state.get("pipeline_ppt_docs") or []
+    total_docs_inputs = len(docs) + len(ppt_docs)
+
     step_word1 = st.empty()
     step_word1.markdown(
         render_step_header_html(
             "6",
-            "Agregar documentos Word's (directos o desde ZIP)",
-            "ok" if docs else "warn",
+            "Agregar documentos Word's y PPT's (directos o desde ZIP)",
+            "ok" if total_docs_inputs > 0 else "warn",
         ),
         unsafe_allow_html=True,
     )
 
-    if not docs:
+    if total_docs_inputs == 0:
         st.caption(
-            "Los documentos Word se generan automáticamente a partir de los PDFs del paso anterior."
+            "Los documentos Word se generan automáticamente a partir de los PDFs del paso anterior; "
+            "los Word/PPT que cargues o descargues también se incorporan aquí."
         )
         ui_card_close()
     else:
-        with st.expander("Documentos Word generados", expanded=False):
-            df_files = _build_word_file_table(docs)
-            st.dataframe(df_files, use_container_width=True, height=260)
+        if docs:
+            with st.expander("Documentos Word (DOCX) a analizar", expanded=False):
+                df_files = _build_word_file_table(docs)
+                st.dataframe(df_files, use_container_width=True, height=260)
 
-        # Procesar Word (Paso 7)
-        render_simple_step_header("7", "Procesar todos los documentos Word's")
+        if ppt_docs:
+            with st.expander("Presentaciones PPTX a analizar", expanded=False):
+                df_files_ppt = _build_pptx_file_table(ppt_docs)
+                st.dataframe(df_files_ppt, use_container_width=True, height=260)
+
+        # Procesar Word & PPT (Paso 7)
+        render_simple_step_header("7", "Procesar todos los documentos Word's y PPT's")
 
         progress_bar_word = st.empty()
         status_text_word = st.empty()
 
         auto_trigger_word = not st.session_state.get("pipeline_word_done", False)
         manual_click_word = st.button(
-            "🚀 Procesar todos los documentos Word's",
+            "🚀 Procesar todos los documentos Word's y PPT's",
             type="primary",
             key="pipeline_btn_word_process",
         )
 
         if auto_trigger_word or manual_click_word:
             try:
-                progress_bar_word.progress(0.0)
-                status_text_word.markdown("Iniciando análisis de documentos Word...")
+                render_progress_bar_ui_task(progress_bar_word, 0.0)
+                status_text_word.markdown("Iniciando análisis de documentos Word y PPT...")
 
-                with st.spinner("Buscando enlaces dentro de los documentos Word..."):
-                    df_links, errores = _run_word_link_report_streamlit(
-                        docs,
-                        progress_bar=progress_bar_word,
-                        status_text=status_text_word,
-                    )
+                df_links_word = pd.DataFrame(
+                    columns=["Nombre del Archivo", "Página/Diapositiva", "Links", "source_url"]
+                )
+                errores_word: List[Dict[str, Any]] = []
+
+                if docs:
+                    with st.spinner("Buscando enlaces dentro de los documentos Word..."):
+                        df_links_word, errores_word = _run_word_link_report_streamlit(
+                            docs,
+                            progress_bar=progress_bar_word,
+                            status_text=status_text_word,
+                        )
+
+                df_links_ppt = pd.DataFrame(
+                    columns=["Nombre del Archivo", "Página/Diapositiva", "Links", "source_url"]
+                )
+                errores_ppt: List[Dict[str, Any]] = []
+
+                if ppt_docs:
+                    with st.spinner("Buscando enlaces dentro de las presentaciones PPTX..."):
+                        df_links_ppt, errores_ppt = _run_pptx_link_report_streamlit(
+                            ppt_docs,
+                            progress_bar=progress_bar_word,
+                            status_text=status_text_word,
+                        )
+
+                if not df_links_word.empty and not df_links_ppt.empty:
+                    df_links = pd.concat([df_links_word, df_links_ppt], ignore_index=True, sort=False)
+                elif not df_links_word.empty:
+                    df_links = df_links_word
+                else:
+                    df_links = df_links_ppt
+
+                errores = errores_word + errores_ppt
 
                 st.session_state["pipeline_df_links"] = df_links
                 st.session_state["reporte_links_df"] = df_links
@@ -3681,9 +4122,9 @@ def page_report_broken_unificado():
                 st.session_state["pipeline_word_done"] = True
 
                 progress_bar_word.empty()
-                status_text_word.markdown("✅ Análisis de documentos Word completado.")
+                status_text_word.markdown("✅ Análisis de documentos Word y PPT completado.")
 
-                total_docs = len(docs)
+                total_docs = len(docs) + len(ppt_docs)
                 total_links = len(df_links)
                 docs_con_links = (
                     df_links["Nombre del Archivo"].nunique()
@@ -3705,11 +4146,11 @@ def page_report_broken_unificado():
             except Exception as e:
                 progress_bar_word.empty()
                 status_text_word.empty()
-                st.error(f"Ocurrió un error durante el análisis de documentos Word: {e}")
+                st.error(f"Ocurrió un error durante el análisis de documentos: {e}")
         else:
             df_links = st.session_state.get("pipeline_df_links")
             if df_links is not None:
-                total_docs = len(docs)
+                total_docs = len(docs) + len(ppt_docs)
                 total_links = len(df_links)
                 docs_con_links = (
                     df_links["Nombre del Archivo"].nunique()
@@ -3728,9 +4169,10 @@ def page_report_broken_unificado():
                     else:
                         st.write("No se detectaron links en los documentos analizados.")
             else:
-                st.info("Cuando termine el análisis de Word se mostrará aquí el resumen de links.")
+                st.info("Cuando termine el análisis se mostrará aquí el resumen de links.")
 
         ui_card_close()
+
 
     # ======================================================
     # 4. Report Broken Link (Excel → Status)
@@ -3826,7 +4268,7 @@ def page_report_broken_unificado():
 
     def progress_cb(done: int, total: int, current_url: str, current_status: str):
         pct = done / max(1, total)
-        progress_bar.progress(pct)
+        render_progress_bar_ui_task(progress_bar, pct)
         show = current_url if len(current_url) <= 85 else ("…" + current_url[-82:])
         status_text.markdown(
             f"Validando **{done}/{total}** · `{show}` · **{current_status}**"
@@ -3844,8 +4286,8 @@ def page_report_broken_unificado():
 
     if should_run:
         try:
-            progress_bar.progress(0.0)
-            status_text.markdown("Iniciando verificación con motor V5...")
+            render_progress_bar_ui_task(progress_bar, 0.0)
+            status_text.markdown("Iniciando verificación con motor...")
 
             if len(links_with_rows) > 0:
                 with st.spinner(
@@ -3969,8 +4411,6 @@ def page_report_broken_unificado():
                 if col_extra not in df_out.columns:
                     df_out[col_extra] = ""
 
-
-
             # --- 5) Rellenar 'name' con el nombre del ZIP/PDF para archivos cargados manualmente ---
             # Regla: si 'name' está vacío y 'source_url' NO parece una URL (no contiene "://"),
             # usamos 'source_url' como nombre lógico del archivo (ZIP o PDF manual).
@@ -4011,7 +4451,7 @@ def page_report_broken_unificado():
             st.session_state.status_export_df = df_export
 
             progress_bar.empty()
-            status_text.markdown("✅ Validación V5 completada.")
+            status_text.markdown("✅ Validación completada.")
             st.session_state["pipeline_status_done"] = True
 
             if df_out is not None and not df_out.empty:
@@ -4042,7 +4482,7 @@ def page_report_broken_unificado():
 
     file_base = Path(st.session_state.status_input_filename or "reporte_link").stem
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_xlsx = f"{file_base}_STATUS_ULTRA_V5_{ts}.xlsx"
+    out_xlsx = f"{file_base}_STATUS_{ts}.xlsx"
 
     excel_bytes = _to_excel_report(df_ready)
 
@@ -4108,6 +4548,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
