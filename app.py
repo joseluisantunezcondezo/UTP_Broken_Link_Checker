@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import os
 import sys
 import asyncio
@@ -4524,14 +4525,14 @@ def main():
         module = st.session_state["module"]
 
         st.markdown("---")
-        with st.expander("Mejoras"):
+        with st.expander("Recomendaciones"):
             st.markdown(
                 """
-                - Los links descartados por validación estructural se incluyen en **Status** con `Status = INVALIDO`.  
-                - Lógica async robusta con cache por URL.  
-                - Módulo de **PDF to Word Transform**: PDF → Word con filtrado de bibliografía.  
-                - Módulo de **Descarga Masiva**: descarga robusta de PDF, Word y PPT desde Excel.  
-                - Nueva columna **Tipo_Problema**: clasifica en SOFT_404, ROTO_REAL, ACCESO_RESTRINGIDO, etc.  
+                - Se recomienda en el proceso "1" descargar de forma masiva entre 400 - 500 documentos/registros como límite máximo..  
+                - Para más de 500 documentos/registros, lo recomendable es:  
+                    Ejecutar el app en local.
+                    Dividir el Excel de Url en varios archivos (por ejemplo bloques de 500 registros) y procesarlos por partes.  
+                - Esto para evitar que el contenedor de Streamlit Cloud se quede sin memoria (~1 GB de RAM) 
                 """
             )
 
@@ -4547,6 +4548,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
