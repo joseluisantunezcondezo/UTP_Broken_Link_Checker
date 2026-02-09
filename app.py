@@ -853,6 +853,22 @@ def apply_global_styles():
             white-space: nowrap;
             text-shadow: 0 1px 2px rgba(15,23,42,0.35);
         }
+
+            .utp-success-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem 1.1rem;
+            border-radius: 999px;
+            background-color: #22c55e;
+            color: #ffffff;
+            font-weight: 700;
+            font-size: 0.9rem;
+            box-shadow: 0 10px 24px rgba(22,163,74,0.45);
+            border: none;
+            margin-top: 0.45rem;
+        }
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -924,6 +940,13 @@ def ui_card_open():
 
 def ui_card_close():
     st.markdown("</div>", unsafe_allow_html=True)
+
+def render_success_chip(text: str):
+    """Muestra un chip tipo botón verde con texto blanco."""
+    st.markdown(
+        f'<div class="utp-success-chip">{text}</div>',
+        unsafe_allow_html=True,
+    )
 
 def render_progress_bar_ui_task(placeholder, progress: float, label: Optional[str] = None):
     """
@@ -3694,7 +3717,7 @@ def page_report_broken_unificado():
             "Carga un archivo Excel para continuar con la descarga masiva."
         )
 
-    ui_card_close()
+    
 
     # ---------- TARJETA: Procesar Descarga Masiva (Paso 2) ----------
     ui_card_open()
@@ -3711,37 +3734,31 @@ def page_report_broken_unificado():
     auto_trigger_bulk = bool(urls_archivos_state) and not st.session_state.get(
         "pipeline_bulk_done", False
     )
-    manual_click_bulk = st.button(
-        "🚀 Procesar Descarga Masiva",
-        type="primary",
-        key="pipeline_btn_bulk_process",
-    )
 
-    if urls_archivos_state and (auto_trigger_bulk or manual_click_bulk):
+    # 🔹 Ya no hay botón visible; el proceso se dispara solo una vez
+    if urls_archivos_state and auto_trigger_bulk:
         try:
             render_progress_bar_ui_task(progress_bar_bulk, 0.0)
             progress_text_bulk.markdown("Preparando descarga masiva...")
 
             with st.spinner("Descargando archivos..."):
-                # 🔹 AHORA SE DESENPACAN 4 VALORES (resultados, fallidos, carpeta, csv_fallidos)
                 resultados, fallidos, download_dir, csv_fallidos_path = _run_descarga_masiva_streamlit(
                     urls_archivos_state,
                     progress_bar=progress_bar_bulk,
                     progress_text=progress_text_bulk,
                 )
 
-            # 🔹 Guardar en session_state usando las nuevas claves basadas en rutas
             st.session_state["descarga_resultados"] = resultados
             st.session_state["descarga_fallidos"] = fallidos
             st.session_state["descarga_download_dir"] = download_dir
             st.session_state["descarga_fallidos_csv"] = csv_fallidos_path
-            # Legacy: ya no se usa ZIP en memoria
             st.session_state["descarga_zip_bytes"] = None
 
             st.session_state["pipeline_bulk_done"] = True
 
+            # Limpiamos textos de progreso y dejamos sólo el chip verde
             progress_bar_bulk.empty()
-            progress_text_bulk.markdown("✅ Descarga masiva completada.")
+            progress_text_bulk.empty()
         except Exception as e:
             progress_bar_bulk.empty()
             progress_text_bulk.empty()
@@ -3757,7 +3774,12 @@ def page_report_broken_unificado():
                 "Primero carga un Excel válido con URLs para poder procesar la descarga."
             )
 
+    # 🔹 Si la descarga masiva ya terminó, mostramos el “botón” verde
+    if st.session_state.get("pipeline_bulk_done", False):
+        render_success_chip("Descarga masiva completada")
+
     ui_card_close()
+
 
     # ---------- TARJETA: Descargar ZIP (Paso 3) ----------
     ui_card_open()
@@ -4178,19 +4200,10 @@ def page_report_broken_unificado():
     progress_bar_pdf = st.empty()
     status_text_pdf = st.empty()
 
+    # 🔹 El proceso se dispara sólo una vez; ya no hay botón visible
     auto_trigger_pdf = not st.session_state.get("pipeline_pdf_done", False)
-    manual_click_pdf = st.button(
-        "🚀 Procesar todos los documentos",
-        type="primary",
-        key="pipeline_btn_pdf_process",
-    )
 
-    # … A partir de aquí el resto de la función sigue igual que en tu versión actual …
-    # (no lo repito para no hacer el mensaje interminable; sólo necesitabas
-    # corregir la parte de Descarga Masiva y de creación del ZIP).
-
-
-    if auto_trigger_pdf or manual_click_pdf:
+    if auto_trigger_pdf:
         try:
             render_progress_bar_ui_task(progress_bar_pdf, 0.0)
             status_text_pdf.markdown("Iniciando procesamiento de documentos...")
@@ -4203,14 +4216,13 @@ def page_report_broken_unificado():
                 with st.spinner("Extrayendo texto y generando archivos Word desde PDFs..."):
                     out_pdf = _run_pdf_extraction_streamlit(
                         pdf_input_paths,
-                        pdf_meta=pdf_meta,  
+                        pdf_meta=pdf_meta,
                         usar_multihilo=bool(usar_multihilo),
                         max_workers=int(max_workers),
                         progress_bar=progress_bar_pdf,
                         status_text=status_text_pdf,
                     )
 
-                # Compatibilidad con versiones que devuelven 2 o 3 elementos
                 if isinstance(out_pdf, tuple):
                     if len(out_pdf) >= 2:
                         resultados_pdf, errores_pdf = out_pdf[0], out_pdf[1]
@@ -4247,30 +4259,27 @@ def page_report_broken_unificado():
                     "origin": "pdf_to_word",
                 }
 
-            # combinamos DOCX originales + DOCX generados desde PDF
             combined_docx_paths = list(dict.fromkeys(docx_input_paths + generated_docx_paths))
             combined_docx_meta = dict(docx_meta)
             combined_docx_meta.update(generated_docx_meta)
 
-            # Guardar rutas y meta en session_state
             st.session_state["pipeline_docx_paths"] = combined_docx_paths
             st.session_state["pipeline_docx_meta"] = combined_docx_meta
             st.session_state["pipeline_pptx_paths"] = pptx_input_paths
             st.session_state["pipeline_pptx_meta"] = pptx_meta
 
-            # Guardar resultados en sesión (para métricas / debugging)
             st.session_state["pipeline_pdf_results"] = resultados_pdf
             st.session_state["pipeline_pdf_errors"] = errores_pdf
             st.session_state["extraccion_resultados"] = resultados_pdf
             st.session_state["extraccion_errores"] = errores_pdf
-            # Ya no se almacena ZIP de DOCX en memoria
             st.session_state["extraccion_zip_bytes"] = None
             st.session_state["pipeline_pdf_done"] = True
             st.session_state["pipeline_word_inputs_count"] = len(combined_docx_paths)
             st.session_state["pipeline_ppt_inputs_count"] = len(pptx_input_paths)
 
+            # Limpiamos textos de progreso y dejamos solo el chip
             progress_bar_pdf.empty()
-            status_text_pdf.markdown("✅ Procesamiento de documentos completado.")
+            status_text_pdf.empty()
         except Exception as e:
             progress_bar_pdf.empty()
             status_text_pdf.empty()
@@ -4301,7 +4310,12 @@ def page_report_broken_unificado():
             if total_pag:
                 st.caption(f"Páginas totales procesadas en PDFs: **{total_pag}**")
 
+    # 🔹 Mostrar chip verde cuando el procesamiento ya terminó
+    if st.session_state.get("pipeline_pdf_done", False):
+        render_success_chip("Procesamiento de documentos completado")
+
     ui_card_close()
+
 
     # ======================================================
     # 3. Report Word & PPT Link (Word / PPT → Links) – usando rutas
@@ -4375,16 +4389,12 @@ def page_report_broken_unificado():
         progress_bar_word = st.empty()
         status_text_word = st.empty()
 
+        # 🔹 Se dispara automáticamente una vez; sin botón visible
         auto_trigger_word = not st.session_state.get("pipeline_word_done", False)
-        manual_click_word = st.button(
-            "🚀 Procesar todos los documentos Word's y PPT's",
-            type="primary",
-            key="pipeline_btn_word_process",
-        )
 
         df_links: Optional[pd.DataFrame] = None
 
-        if auto_trigger_word or manual_click_word:
+        if auto_trigger_word:
             try:
                 render_progress_bar_ui_task(progress_bar_word, 0.0)
                 status_text_word.markdown("Iniciando análisis de documentos Word y PPT...")
@@ -4486,7 +4496,7 @@ def page_report_broken_unificado():
                 st.session_state["pipeline_word_done"] = True
 
                 progress_bar_word.empty()
-                status_text_word.markdown("✅ Análisis de documentos Word y PPT completado.")
+                status_text_word.empty()
 
                 total_docs = len(docx_paths) + len(pptx_paths)
                 total_links = len(df_links)
@@ -4506,7 +4516,6 @@ def page_report_broken_unificado():
                         st.dataframe(df_links.head(500), use_container_width=True, height=320)
                         if len(df_links) > 500:
                             st.caption(f"Mostrando sólo las primeras 500 filas de un total de {len(df_links)}.")
-
                     else:
                         st.write("No se detectaron links en los documentos analizados.")
             except Exception as e:
@@ -4537,7 +4546,12 @@ def page_report_broken_unificado():
             else:
                 st.info("Cuando termine el análisis se mostrará aquí el resumen de links.")
 
+        # 🔹 Mostrar chip verde cuando el análisis ya terminó
+        if st.session_state.get("pipeline_word_done", False):
+            render_success_chip("Análisis de documentos Word y PPT completado")
+
         ui_card_close()
+
 
     # ======================================================
     # 4. Report Broken Link (Excel → Status)
@@ -4606,7 +4620,7 @@ def page_report_broken_unificado():
 
     ui_card_close()
 
-    # 4.3 Procesar Reporte Link (Paso 9)
+     # 4.3 Procesar Reporte Link (Paso 9)
     ui_card_open()
     render_simple_step_header("9", "Procesar y Descargar Status Reporte (Excel)")
 
@@ -4639,13 +4653,8 @@ def page_report_broken_unificado():
             f"Validando **{done}/{total}** · `{show}` · **{current_status}**"
         )
 
-    should_run = False
-    if not st.session_state.get("pipeline_status_done", False):
-        should_run = True
-
-    if st.button("🚀 Iniciar validación", type="primary", key="pipeline_btn_status_process"):
-        should_run = True
-        st.session_state["pipeline_status_done"] = False
+    # 🔹 La validación se ejecuta automáticamente una sola vez; sin botón visible
+    should_run = not st.session_state.get("pipeline_status_done", False)
 
     df_out: Optional[pd.DataFrame] = None
 
@@ -4658,7 +4667,6 @@ def page_report_broken_unificado():
 
             if total_links > 0:
                 if total_links <= STATUS_BLOCK_SIZE:
-                    # Modo “simple”: todos los links en una sola llamada
                     def progress_cb_single(done: int, total: int, current_url: str, current_status: str):
                         pct = done / max(1, total)
                         render_progress_bar_ui_task(progress_bar, pct)
@@ -4686,7 +4694,6 @@ def page_report_broken_unificado():
                         )
                     df_out = pd.DataFrame(results)
                 else:
-                    # Modo por bloques: CSV temporal en disco
                     status_temp_dir = Path(tempfile.mkdtemp(prefix="utp_status_links_"))
                     status_temp_csv = status_temp_dir / "status_links_temp.csv"
                     base_done = 0
@@ -4947,7 +4954,7 @@ def page_report_broken_unificado():
             st.session_state.status_export_df = df_export
 
             progress_bar.empty()
-            status_text.markdown("✅ Validación completada.")
+            status_text.empty()
             st.session_state["pipeline_status_done"] = True
 
             if df_out is not None and not df_out.empty:
@@ -4964,6 +4971,10 @@ def page_report_broken_unificado():
             _render_status_summary(df_out)
         else:
             st.info("Aún no se ha ejecutado la validación de links.")
+
+    # 🔹 Mostrar chip verde cuando la validación ya terminó
+    if st.session_state.get("pipeline_status_done", False):
+        render_success_chip("Validación completada")
 
     # 4.4 Descargar Status (Excel) - dentro del mismo bloque (Paso 9)
     df_ready: Optional[pd.DataFrame] = st.session_state.get("status_export_df")
@@ -5043,6 +5054,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
