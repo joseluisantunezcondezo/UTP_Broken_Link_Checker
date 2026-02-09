@@ -47,6 +47,9 @@ except ImportError:  # pragma: no cover
 
 import pandas as pd
 import streamlit as st
+import base64
+import streamlit.components.v1 as components
+
 
 try:
     import httpx
@@ -1069,6 +1072,13 @@ def init_session_state():
     st.session_state.setdefault("status_invalid_df", None)
     st.session_state.setdefault("status_export_df", None)
 
+
+    # 🔹 NUEVO: info del Excel de status para auto-descarga
+    st.session_state.setdefault("status_excel_bytes", None)
+    st.session_state.setdefault("status_excel_filename", None)
+    st.session_state.setdefault("status_excel_auto_downloaded", False)
+
+
     # Estado para PDF to Word Transform
     st.session_state.setdefault("extraccion_zip_bytes", None)   # ya no se usa, pero lo dejamos por compatibilidad
     st.session_state.setdefault("extraccion_resultados", None)
@@ -1167,6 +1177,10 @@ def reset_report_broken_pipeline():
         "status_result_df",
         "status_invalid_df",
         "status_export_df",
+        # 🔹 NUEVO: limpiar info de Excel de status
+        "status_excel_bytes",
+        "status_excel_filename",
+        "status_excel_auto_downloaded",
     ]
 
     for k in keys_to_clear:
@@ -4957,6 +4971,12 @@ def page_report_broken_unificado():
             status_text.empty()
             st.session_state["pipeline_status_done"] = True
 
+
+            # 🔹 NUEVO: reset de info del Excel para que se regenere y dispare auto-descarga
+            st.session_state["status_excel_filename"] = None
+            st.session_state["status_excel_bytes"] = None
+            st.session_state["status_excel_auto_downloaded"] = False
+
             if df_out is not None and not df_out.empty:
                 _render_status_summary(df_out)
             else:
@@ -4986,11 +5006,25 @@ def page_report_broken_unificado():
         ui_card_close()
         return
 
+    # 🔹 Reusar el mismo nombre y bytes mientras no cambie la validación
     file_base = Path(st.session_state.status_input_filename or "reporte_link").stem
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_xlsx = f"{file_base}_STATUS_{ts}.xlsx"
 
-    excel_bytes = _to_excel_report(df_ready)
+    stored_filename = st.session_state.get("status_excel_filename")
+    stored_bytes = st.session_state.get("status_excel_bytes")
+
+    if stored_filename and stored_bytes is not None:
+        # Ya hay un Excel generado para esta validación → lo reutilizamos
+        out_xlsx = stored_filename
+        excel_bytes = stored_bytes
+    else:
+        # Primera vez que se genera el Excel para esta validación
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_xlsx = f"{file_base}_STATUS_{ts}.xlsx"
+        excel_bytes = _to_excel_report(df_ready)
+
+        st.session_state["status_excel_filename"] = out_xlsx
+        st.session_state["status_excel_bytes"] = excel_bytes
+        # El flag status_excel_auto_downloaded se resetea en el momento de terminar la validación
 
     colD1, colD2 = st.columns([1, 3])
     with colD1:
@@ -5001,8 +5035,38 @@ def page_report_broken_unificado():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    ui_card_close()
+    # 🔹 Auto-descarga: sólo la primera vez después de una validación nueva
+    if (
+        st.session_state.get("pipeline_status_done", False)
+        and not st.session_state.get("status_excel_auto_downloaded", False)
+    ):
+        try:
+            b64 = base64.b64encode(excel_bytes).decode()
+            download_id = "auto-download-excel-status"
 
+            components.html(
+                f"""
+                <html>
+                  <body>
+                    <a id="{download_id}"
+                       href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}"
+                       download="{out_xlsx}"></a>
+                    <script>
+                      var a = document.getElementById("{download_id}");
+                      if (a) {{
+                          a.click();
+                      }}
+                    </script>
+                  </body>
+                </html>
+                """,
+                height=0,
+            )
+            st.session_state["status_excel_auto_downloaded"] = True
+        except Exception as e:
+            st.warning(f"No se pudo disparar la descarga automática del Excel: {e}")
+
+    ui_card_close()
 
 # ======================================================
 # MAIN
@@ -5054,6 +5118,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
