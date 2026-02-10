@@ -3576,17 +3576,209 @@ def _run_pdf_extraction_streamlit(
 # ======================================================
 
 def page_home():
+    # Hero principal
     render_hero(
         title=APP_TITLE,
-        subtitle="Plataforma de validación inteligente de Links rotos con reporte único de estado en Excel.",
+        subtitle=(
+            "Revisión automatizada y validación inteligente de enlaces contenidos "
+            "en documentos académicos y administrativos."
+        ),
         icon="🔗",
     )
+
+    # Card principal de contenido
     ui_card_open()
-    st.markdown("### 🏠 Home")
-    st.info(
-        "Flujo recomendado: **Reporte Link (Excel) → Report Broken Link → Descargar Excel Status**"
+
+    # Sección: Home + propósito general
+    st.markdown(
+        """
+        ### 🏠 Home
+
+        UTP - Broken Link Checker es una plataforma avanzada de verificación inteligente de **links**
+        contenida en diversos tipos de archivos académicos y administrativos. Su objetivo principal es 
+        automatizar la detección de enlaces rotos en documentos académicos,
+        optimizando significativamente los procesos de revisión documental y asegurando la calidad
+        de los recursos digitales utilizados en la enseñanza.
+
+        
+        ### 🎯 Propósito de la Plataforma
+
+        Transformar la tediosa tarea manual de verificación de enlaces en un proceso automatizado, rápido y confiable,
+        proporcionando reportes estructurados que facilitan la corrección de enlaces problemáticos en materiales
+        académicos, investigaciones y documentación institucional.
+
+        **Cobertura:** análisis de documentos en múltiples formatos (**PDF, Word, PPT, ZIP**) y archivos **Excel**
+        que contienen las URLs de los documentos a descargar.
+        """,
+        unsafe_allow_html=False,
     )
+
+    # Sección: Funcionalidades principales
+    st.markdown(
+        """
+        ---
+        ### ✨ Funcionalidades Principales
+
+        - **Descarga Masiva Inteligente (Extracción Automática)**. Identifica y descarga automáticamente documentos **PDF, Word y PPT** desde listados de URLs en Excel.
+        - **Transformación Avanzada de Documentos PDF a Word**. Convierte documentos PDF a formato Word manteniendo la estructura y contenido textual.  
+        - **Extracción Completa de Enlaces**. Analiza documentos Word y PPT detectando enlaces en texto y en hipervínculos incrustados.   
+        - **Validación de Enlaces**. Distingue entre enlaces realmente rotos y falsos positivos.  
+        - **Reporte Status Excel**. Genera reportes en Excel con clasificación detallada de enlaces (**ACTIVO/ROTO**).  
+        """,
+        unsafe_allow_html=False,
+    )
+
+    # Sección: Flujo de trabajo (NUEVA VERSIÓN)
+    st.markdown("---")
+    st.markdown("### ✨ Flujo de Trabajo")
+
+    # 1) Resumen en tarjetas horizontales CON FLECHAS
+    pasos_resumen = [
+        ("1", "Carga de URLs", "Excel con enlaces"),
+        ("2", "Descarga masiva", "Documentos origen"),
+        ("3", "Transformación", "PDF → Word"),
+        ("4", "Extracción", "Detección de links"),
+        ("5", "Validación", "Status de enlaces"),
+        ("6", "Reporte final", "Excel Status"),
+    ]
+
+    # [card, arrow, card, arrow, ..., card]
+    pesos = []
+    for i in range(len(pasos_resumen)):
+        pesos.append(4)  # columna de tarjeta
+        if i < len(pasos_resumen) - 1:
+            pesos.append(1)  # columna de flecha
+
+    cols = st.columns(pesos)
+
+    idx = 0
+    for i, (numero, titulo, subtitulo) in enumerate(pasos_resumen):
+        # tarjeta
+        with cols[idx]:
+            st.markdown(
+                f"""
+                <div style="
+                    background-color: #ffffff;
+                    border-radius: 14px;
+                    padding: 16px 18px;
+                    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+                    text-align: center;
+                    font-size: 0.85rem;
+                ">
+                    <div style="
+                        display:inline-flex;
+                        align-items:center;
+                        justify-content:center;
+                        width:32px;
+                        height:32px;
+                        border-radius:8px;
+                        background:#3b82f6;
+                        color:#ffffff;
+                        font-weight:700;
+                        margin-bottom:6px;
+                    ">
+                        {numero}
+                    </div>
+                    <div style="font-weight: 600;">{titulo}</div>
+                    <div style="color: #6b7280; font-size: 0.75rem;">{subtitulo}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        idx += 1
+
+        # flecha (entre tarjetas, excepto después de la última)
+        if i < len(pasos_resumen) - 1:
+            with cols[idx]:
+                st.markdown(
+                    """
+                    <div style="
+                        display:flex;
+                        align-items:center;
+                        justify-content:center;
+                        min-height:120px;
+                    ">
+                        <span style="font-size:1.8rem; color:#9ca3af;">➜</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            idx += 1
+
+    st.markdown("")  # pequeño espacio debajo del timeline
+
+ # 2) Detalle por paso en expanders (6 pasos completos)
+    with st.expander("🔹 Paso 1: Carga de Excel de URLs", expanded=False):
+        st.markdown(
+            """
+            - **Formato flexible**: soporta múltiples estructuras de columnas en Excel.  
+            - **Normalización automática**: corrige y estandariza formatos de URLs.  
+            - **Validación preliminar**: detecta problemas estructurales antes del procesamiento.
+            """
+        )
+
+    with st.expander("🔹 Paso 2: Descarga Masiva", expanded=False):
+        st.markdown(
+            """
+            - **Procesamiento automático**: descarga simultánea de múltiples documentos.  
+            - **Gestión de errores**: registro detallado de fallos con motivos específicos.  
+            - **Organización automática**: archivos descargados listos para procesamiento posterior.
+            """
+        )
+
+    with st.expander("🔹 Paso 3: Transformación de Documentos", expanded=False):
+        st.markdown(
+            """
+            - **Conversión** **PDF → Word**: extracción textual manteniendo referencias.  
+            - **Procesamiento paralelo**: uso eficiente de recursos para documentos grandes.  
+            - **Preservación de metadatos**: mantenimiento de información de origen.
+            """
+        )
+
+    with st.expander("🔹 Paso 4: Extracción de Enlaces", expanded=False):
+        st.markdown(
+            """
+            - **Análisis exhaustivo**: detección de enlaces en texto y elementos incrustados.  
+            - **Contexto completo**: asociación de enlaces con páginas/diapositivas específicas.
+            """
+        )
+
+    with st.expander("🔹 Paso 5: Validación de Enlaces", expanded=False):
+        st.markdown(
+            """
+            - **Verificación en tiempo real**: comprobación de estado HTTP actualizado.  
+            - **Clasificación inteligente**: distinción entre diferentes tipos de problemas.  
+            - *Scoring* **automático**: evaluación de confiabilidad de cada enlace.
+            """
+        )
+
+    with st.expander("🔹 Paso 6: Reporte Final", expanded=False):
+        st.markdown(
+            """
+            - **Excel estructurado**: exportación de reporte Excel.  
+            - **Clasificación visual**: colores diferenciados para estados **ACTIVO/ROTO**.
+            """
+        )
+
+
+    # Sección: Seguridad
+    st.markdown(
+        """
+        ---
+        ### 🔒 Seguridad y Privacidad
+
+        - **Procesamiento local**: no se almacenan documentos en servidores externos.  
+        - **Metadatos anónimos**: solo se registra información necesaria para el análisis.  
+        - **Sin persistencia**: los archivos temporales se eliminan después del procesamiento.  
+        - **Control total**: el usuario mantiene control completo sobre sus documentos.
+        """,
+        unsafe_allow_html=False,
+    )
+
     ui_card_close()
+
 def page_report_broken_unificado():
     """
     Pantalla unificada 'Report Broken Link':
@@ -4946,8 +5138,6 @@ def page_report_broken_unificado():
                         lambda s: Path(s).name
                     )
 
-
-
             if "Fila_Excel" in df_out.columns:
                 df_out = df_out.sort_values(["Fila_Excel", "Status"]).reset_index(drop=True)
             else:
@@ -5118,6 +5308,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
