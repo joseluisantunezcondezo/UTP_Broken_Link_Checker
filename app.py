@@ -3792,8 +3792,8 @@ def page_report_broken_unificado():
     # 1. Bulk Document (PDF, WORD and PPT) Download
     # ======================================================
     render_hero(
-        "Bulk Document (PDF, WORD and PPT) Download",
-        "Descarga múltiple de documentos PDF, Word y PPT desde un archivo Excel de URLs.",
+        "Descarga Masiva Automática de Documentos (PDF's - Word y PPT) desde un Reporte Excel",
+        "Sube tu Excel con URLs y descarga automáticamente todos los documentos y el reporte en Excel.",
         "⬇️",
     )
 
@@ -4069,8 +4069,8 @@ def page_report_broken_unificado():
     # 2. PDF, WORD and PPT to Word Transformation (ZIP) – basado en rutas
     # ======================================================
     render_hero(
-        "PDF, WORD and PPT to Word Transformation (ZIP)",
-        "Convierte múltiples PDFs, Word y PPT a Word (texto) usando archivos en disco, sin mantener bytes en memoria.",
+        "Carga Directa de Documentos (PDF's - Word y PPT) y ZIP",
+        "Arrastra tus PDFs, Word, PPT o ZIP y el sistema los procesa automáticamente.",
         "🧲",
     )
 
@@ -5313,6 +5313,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
