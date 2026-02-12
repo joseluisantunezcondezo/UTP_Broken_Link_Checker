@@ -166,6 +166,69 @@ BINARY_EXTS = {
 # debe considerarse SIEMPRE como ROTO en el reporte.
 CANVAS_UTP_KEYWORD = "canvas.utp"
 
+# 🔵 Lista blanca: URLs/patrones que la UTP ha validado manualmente
+# y que SIEMPRE deben considerarse ACTIVO en el reporte.
+ALWAYS_ACTIVE_URL_PREFIXES = [
+    # RAE – Diccionario y diccionario jurídico
+    "https://dle.rae.es/",
+    "https://dpej.rae.es/lema/",
+
+    # Repositorio DOCTA – Universidad Complutense de Madrid
+    "https://docta.ucm.es/",
+
+    # Repositorio PIRHUA – Universidad de Piura
+    "https://pirhua.udep.edu.pe/",
+
+    # Corte Interamericana de Derechos Humanos
+    "https://www.corteidh.or.cr/",
+
+    # 🔵 NUEVO: Ministerio de Economía y Finanzas (sitio validado manualmente)
+    "https://www.mef.gob.pe/",
+]
+
+
+def _is_always_active_url(url: str) -> bool:
+    """
+    Devuelve True si la URL está en la lista blanca institucional UTP.
+    Se comparan prefijos en minúsculas.
+    """
+    u = (url or "").lower()
+    for prefix in ALWAYS_ACTIVE_URL_PREFIXES:
+        if u.startswith(prefix.lower()):
+            return True
+    return False
+
+
+def _apply_url_whitelist(base: Dict[str, Any], url: str) -> Dict[str, Any]:
+    """
+    Si la URL está en la lista blanca, fuerza Status = ACTIVO
+    pero conserva el resto de información técnica (código HTTP, etc.).
+    """
+    if not _is_always_active_url(url):
+        return base
+
+    row = dict(base)  # copia para no mutar accidentalmente
+    row["Status"] = "ACTIVO"
+    row["Soft_404"] = "No"
+
+    detalle = str(row.get("Detalle") or "").strip()
+    if detalle:
+        row["Detalle"] = f"[Lista blanca UTP] {detalle}"
+    else:
+        row["Detalle"] = (
+            "[Lista blanca UTP] Enlace marcado como ACTIVO por validación manual institucional."
+        )
+
+    # Aumentamos el score para evitar que otras heurísticas lo vuelvan a marcar como dudoso
+    try:
+        score = float(row.get("Score", 0) or 0)
+    except Exception:
+        score = 0
+    if score < 150:
+        row["Score"] = 150
+
+    return row
+
 # Mapeo de extensiones a Content-Type esperado
 EXPECTED_CONTENT_TYPES = {
     ".pdf": ["application/pdf"],
@@ -223,8 +286,19 @@ TRUSTED_DOMAINS = [
     "microsoft.com",
     "amazon.com",
     "bbc.com",
-]
 
+    # 🔵 Nuevos dominios académicos / jurídicos confiables
+    "rae.es",
+    "dle.rae.es",
+    "dpej.rae.es",
+    "ucm.es",
+    "docta.ucm.es",
+    "udep.edu.pe",
+    "pirhua.udep.edu.pe",
+    "corteidh.or.cr",
+    # 🔵 NUEVO: Ministerio de Economía y Finanzas (Perú)
+    "mef.gob.pe",
+]
 
 DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
     "facebook.com": {
@@ -329,6 +403,51 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
         "accept_codes": [200, 301, 302, 303, 307, 308, 403, 503],
     },
 
+        # 🔵 Real Academia Española – diccionarios
+    "rae.es": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 403, 429],
+    },
+    "dle.rae.es": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 403, 429],
+    },
+    "dpej.rae.es": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 403, 429],
+    },
+
+    # 🔵 Repositorio DOCTA – Universidad Complutense de Madrid
+    "docta.ucm.es": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403],
+        "skip_ssl_verify": True,  # si da problemas de certificado
+    },
+
+    # 🔵 Repositorio PIRHUA – Universidad de Piura
+    "pirhua.udep.edu.pe": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+        "skip_ssl_verify": True,
+    },
+
+    # 🔵 Corte Interamericana de Derechos Humanos
+    "corteidh.or.cr": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+    },
+
+    # 🔵 NUEVO: Ministerio de Economía y Finanzas – Perú (MEF)
+    "mef.gob.pe": {
+        # Lo tratamos como dominio confiable
+        "trusted_domain": True,
+        # Códigos que consideramos “válidos” para este dominio:
+        # - 200, 301–308 → OK / redirecciones normales
+        # - 403, 429    → típicos de anti-bot / límite de peticiones (pero el recurso existe)
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+        # En caso de problemas de certificado, se fuerza el cliente sin verificación SSL
+        "skip_ssl_verify": True,
+    },
 }
 
 # ======================================================
@@ -389,6 +508,22 @@ SOFT_404_STRONG_PATTERNS = [
 ]
 
 SOFT_404_STRONG_RE = re.compile("|".join(SOFT_404_STRONG_PATTERNS), re.IGNORECASE)
+
+# 🔵 Versión suavizada para dominios de confianza:
+#    ignoramos patrones de anti-bot / JavaScript, que no significan que la página no exista.
+_SOFT_404_TRUSTED_PATTERNS = [
+    p for p in SOFT_404_STRONG_PATTERNS
+    if not any(kw in p for kw in ("javascript", "robot"))
+]
+
+if _SOFT_404_TRUSTED_PATTERNS:
+    SOFT_404_STRONG_TRUSTED_RE = re.compile(
+        "|".join(_SOFT_404_TRUSTED_PATTERNS),
+        re.IGNORECASE,
+    )
+else:
+    # fallback por seguridad
+    SOFT_404_STRONG_TRUSTED_RE = SOFT_404_STRONG_RE
 
 # Patrones que indican contenido real (artículo, post, etc.)
 VALID_CONTENT_PATTERNS = [
@@ -1544,23 +1679,24 @@ def _is_suspicious_redirect_to_root(original_url: str, final_url: str) -> bool:
         return True
 
     return False
-
 def _soft_404_detect_v5(body_text: str, url: str) -> Tuple[bool, int]:
     """
     Detección reforzada de soft-404:
 
     1) Patrones fuertes (SOFT_404_STRONG_RE) → error casi seguro.
+       Para dominios de confianza usamos una versión suavizada
+       que ignora patrones de anti-bot / JavaScript.
     2) Páginas HTML muy pequeñas sin señales de contenido real.
     3) Score heurístico general (penaliza mensajes de error y textos muy cortos).
     """
     if not body_text:
         return False, 0
 
-    # Trozo suficiente para buscar mensajes de error
     chunk = body_text[:8000]
 
-    # 1) Patrones fuertes → confianza muy alta, en cualquier dominio
-    if SOFT_404_STRONG_RE.search(chunk):
+    # 🔵 Elegimos el patrón según si el dominio es de confianza o no
+    strong_re = SOFT_404_STRONG_TRUSTED_RE if _is_trusted_domain(url) else SOFT_404_STRONG_RE
+    if strong_re.search(chunk):
         return True, 95
 
     # 2) Páginas muy pequeñas sin señales de contenido real
@@ -1576,12 +1712,11 @@ def _soft_404_detect_v5(body_text: str, url: str) -> Tuple[bool, int]:
     # 3) Score heurístico (penaliza SOFT_404_RE, textos muy cortos, etc.)
     score = _calculate_content_score(body_text, url)
 
-    # Umbral ligeramente más estricto (antes era score < -10)
+    # Umbral de soft-404 heurístico
     if score <= -10:
         return True, min(90, abs(score))
 
     return False, 0
-
 
 def _classify_v5(
     url: str,
@@ -1961,7 +2096,6 @@ async def _check_one_url_robust_v5(
         "Soft_404": "Sí" if soft_flag else "No",
         "Score": content_score,
     }
-
 async def _run_link_check_ultra_v5(
     links_with_rows: List[Tuple[int, str]],
     *,
@@ -1980,10 +2114,12 @@ async def _run_link_check_ultra_v5(
     - Concurrencia global y por host.
     - Cache por URL en session_state["status_cache"].
     - Headers por dominio (User-Agent realista).
-    - **NUEVO**: dos clientes HTTPX
+    - Dos clientes HTTPX:
         * client_ssl   → verify = verify_ssl (según toggle)
         * client_nossl → verify = False (para dominios con skip_ssl_verify)
     """
+
+    # ---- Semáforos de concurrencia ----
     sem_global = asyncio.Semaphore(max(1, int(concurrency_global)))
     host_sems: Dict[str, asyncio.Semaphore] = {}
 
@@ -1993,23 +2129,24 @@ async def _run_link_check_ultra_v5(
             host_sems[hk] = asyncio.Semaphore(max(1, int(concurrency_per_host)))
         return host_sems[hk]
 
+    # ---- Límites y timeout de httpx ----
     limits = httpx.Limits(
         max_connections=max(10, int(concurrency_global) + 10),
         max_keepalive_connections=max(10, int(concurrency_global)),
         keepalive_expiry=30.0,
     )
-
     timeout = httpx.Timeout(timeout_s)
 
+    # ---- Caché en session_state ----
     cache: Dict[str, Dict[str, Any]] = st.session_state.get("status_cache", {})
     if not isinstance(cache, dict):
         cache = {}
     st.session_state["status_cache"] = cache
 
-    # Headers base genéricos
+    # Headers base genéricos (se mezclan con los específicos por dominio)
     base_headers = _build_headers_for_domain("https://example.com")
 
-    # 👇 Creamos dos clientes: uno respeta el toggle verify_ssl, el otro siempre ignora certificados
+    # ---- Clientes HTTPX (con y sin verificación SSL) ----
     async with httpx.AsyncClient(
         headers=base_headers,
         limits=limits,
@@ -2030,19 +2167,18 @@ async def _run_link_check_ultra_v5(
         done = 0
         results: List[Dict[str, Any]] = []
 
-        async def worker(fila_excel: int, u: str):
+        async def worker(fila_excel: int, u: str) -> Dict[str, Any]:
             nonlocal done
+
             host_sem = get_host_sem(u)
 
-            # Config por dominio
+            # Config específica del dominio (puede indicar skip_ssl_verify)
             config = _get_domain_config(u)
-
-            # Si el usuario desactivó "Verificar SSL" → usamos siempre client_nossl.
-            # Si está activado, sólo usamos client_nossl para dominios que tengan skip_ssl_verify = True
             use_no_ssl = (not verify_ssl) or bool(config.get("skip_ssl_verify", False))
             client = client_nossl if use_no_ssl else client_ssl
 
-            # Headers ajustados por dominio (User-Agent, Referer, etc.)
+            # Headers “tipo navegador” ajustados al dominio
+            # (se actualizan sobre los base; no se limpian para mantener compatibilidad)
             client.headers.update(_build_headers_for_domain(u))
 
             async with sem_global:
@@ -2059,21 +2195,33 @@ async def _run_link_check_ultra_v5(
                             detect_soft_404=detect_soft_404,
                             retries=retries,
                         )
-                        cache[u] = base
+
+                    # Aplicar lista blanca institucional (RAE, DOCTA, PIRHUA, etc.)
+                    base = _apply_url_whitelist(base, u)
+                    cache[u] = base
 
             row = dict(base)
             row["Fila_Excel"] = fila_excel
 
             done += 1
             progress_callback(done, total, u, row.get("Status", ""))
+
             return row
 
+        # ---- Lanzar tareas para TODOS los links ----
         tasks = [worker(fila, url) for (fila, url) in links_with_rows]
-        for coro in asyncio.as_completed(tasks):
-            results.append(await coro)
 
-        st.session_state["status_cache"] = cache
-        return results
+        # Recogemos resultados conforme cada tarea termina
+        for coro in asyncio.as_completed(tasks):
+            try:
+                results.append(await coro)
+            except Exception as e:
+                # Por seguridad, en caso de error no previsto en worker
+                logger.error(f"Error inesperado en worker: {e}")
+
+    # Guardar caché actualizada en session_state y devolver resultados
+    st.session_state["status_cache"] = cache
+    return results
 
 def run_async(coro):
     """
@@ -5313,6 +5461,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
