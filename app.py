@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import sys
 import asyncio
@@ -70,7 +69,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # ======================================================
 # CONFIG / CONSTANTES
 # ======================================================
@@ -82,8 +80,6 @@ MODULES = [
     "Home",
     "Report Broken Link",  # Solo 2 módulos
 ]
-
-
 
 DEFAULT_TIMEOUT_S = 15.0
 DEFAULT_CONCURRENCY_GLOBAL = 30
@@ -3498,63 +3494,6 @@ def _run_descarga_masiva_streamlit(
 
     return resultados, fallidos, str(tmp_dir), str(csv_fallidos_path) if csv_fallidos_path else None
 
-
-# ------------------------------------------------------
-# Wrapper para PDFs extraídos de ZIP (simula UploadedFile)
-# ------------------------------------------------------
-class InMemoryUploadedPDF:
-    """
-    Pequeño wrapper para tratar PDFs extraídos de un ZIP o descargados en lote
-    como si fueran `UploadedFile` de Streamlit.
-
-    Además guarda, opcionalmente, la URL origen (`source_url`) del documento
-    para poder enlazar luego con el Excel de contenidos (name, link_class).
-    """
-
-    def __init__(self, name: str, data: bytes, source_url: Optional[str] = None):
-        self.name = name
-        self._data = data
-        self.source_url = source_url
-
-    def getbuffer(self):
-        return self._data
-
-
-# ------------------------------------------------------
-# Wrapper para DOCX extraídos de ZIP (simula UploadedFile)
-# ------------------------------------------------------
-class InMemoryUploadedDOCX:
-    """
-    Wrapper para tratar DOCX generados desde PDF o extraídos de ZIP como si fueran
-    `UploadedFile` de Streamlit.
-
-    También guarda (opcionalmente) la `source_url` del PDF original, cuando proviene
-    de la Descarga Masiva.
-    """
-
-    def __init__(self, name: str, data: bytes, source_url: Optional[str] = None):
-        self.name = name
-        self._data = data
-        self.source_url = source_url
-
-    def getbuffer(self):
-        return self._data
-
-class InMemoryUploadedPPTX:
-    """
-    Wrapper en memoria para tratar PPTX (directos o desde ZIP / Descarga Masiva)
-    de forma similar a los UploadedFile de Streamlit.
-    """
-
-    def __init__(self, name: str, data: bytes, source_url: Optional[str] = None):
-        self.name = name
-        self._data = data
-        self.source_url = source_url
-
-    def getbuffer(self):
-        return self._data
-
-
 # ======================================================
 # HELPERS PDF to Word Transform (UI)
 # ======================================================
@@ -3984,65 +3923,9 @@ def _extract_urls_from_text(text: str) -> List[str]:
 
     return urls
 
-
 # ======================================================
 # FUNCIÓN AUXILIAR PARA WORD
 # ======================================================
-
-def _extract_urls_from_paragraph_xml(para, doc_part) -> List[str]:
-    """
-    Extrae URLs desde la estructura XML del párrafo de Word.
-    Versión mejorada que evita duplicados y texto de referencias.
-    """
-    urls: List[str] = []
-
-    WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
-    HYPERLINK_TAG = f"{{{WORD_NS}}}hyperlink"
-    INSTR_TEXT_TAG = f"{{{WORD_NS}}}instrText"
-    RID_ATTR = f"{{{REL_NS}}}id"
-
-    p = para._p
-
-    # 1) Hyperlinks explícitos
-    try:
-        for hlink in p.iter():
-            if hlink.tag != HYPERLINK_TAG:
-                continue
-            r_id = hlink.get(RID_ATTR)
-            if not r_id:
-                continue
-            rel = doc_part.rels.get(r_id)
-            if not rel:
-                continue
-            target = str(getattr(rel, "target_ref", "") or "")
-            if not target:
-                continue
-            target = _strip_invisible(target).strip()
-            target = target.strip("()[]{}.,;:!?'\"")
-            
-            # ✅ Limpiar referencias bibliográficas del target
-            target = re.sub(r'\(\d{4}[a-z]?\)$', '', target)
-            target = re.sub(r'/[A-Z][a-zA-Z]+$', '', target)
-            
-            if target:
-                urls.append(target)
-    except Exception:
-        pass
-
-    # 2) Campos HYPERLINK
-    try:
-        for instr in p.iter():
-            if instr.tag != INSTR_TEXT_TAG:
-                continue
-            txt = instr.text or ""
-            for u in _extract_urls_from_text(txt):
-                urls.append(u)
-    except Exception:
-        pass
-
-    return urls
 
 def _extract_urls_from_paragraph_xml(para, doc_part) -> List[str]:
     """
@@ -4157,8 +4040,6 @@ def _extract_links_from_docx_bytes(docx_bytes: bytes, filename: str) -> List[Dic
             )
 
     return rows
-
-
 
 def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dict[str, Any]]:
     """
@@ -4455,8 +4336,6 @@ def _run_pdf_extraction_streamlit(
     logger.info("Procesamiento PDFs completado en %.2fs", elapsed)
 
     return resultados, errores, docx_paths, docx_meta
-
-
 
 # ======================================================
 # PÁGINAS / MÓDULOS
@@ -6216,8 +6095,10 @@ def main():
         render_hero(title=module, subtitle="Módulo no encontrado.", icon="⚠️")
         st.error("Módulo seleccionado no existe.")
 
+
 if __name__ == "__main__":
     main()
+
 
 
 
