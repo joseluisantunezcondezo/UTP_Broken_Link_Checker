@@ -97,7 +97,7 @@ STATUS_BLOCK_SIZE = 200  # número máximo de links por bloque al validar
 MAX_ZIP_BLOCK_MB = 200   # tamaño máximo aproximado por bloque de ZIP (MB)
 
 # --------- Límite de seguridad Streamlit Cloud (solo afecta a la descarga masiva desde Excel) ----------
-MAX_BULK_URLS_CLOUD = 500
+MAX_BULK_URLS_CLOUD = 700
 
 
 def is_streamlit_cloud() -> bool:
@@ -1065,7 +1065,6 @@ def _is_valid_status_code(url: str, status_code: int) -> bool:
     # Por defecto, 2xx y 3xx son válidos
     return status_code < 400
 
-
 def _calculate_content_score(text: str, url: str) -> int:
     """
     Score basado en el contenido:
@@ -1466,7 +1465,6 @@ def apply_global_styles():
         unsafe_allow_html=True,
     )
 
-
 def render_sidebar_header():
     st.markdown(
         f"""
@@ -1481,7 +1479,6 @@ def render_sidebar_header():
         """,
         unsafe_allow_html=True,
     )
-
 
 def render_hero(title: str, subtitle: str, icon: str = "🔗"):
     st.markdown(
@@ -4782,7 +4779,7 @@ def page_report_broken_unificado():
                             f"El Excel contiene {total_permitidas} URLs descargables, "
                             f"lo cual supera el límite de {MAX_BULK_URLS_CLOUD} URLs "
                             "por ejecución en Streamlit Cloud. "
-                            "Para más de 500 URLs, divide el Excel o ejecuta la herramienta en local."
+                            "Para más de 700 URLs, divide el Excel o ejecuta la herramienta en local."
                         )
                         st.info(
                             "📌 Documento demasiado grande para **Streamlit Cloud**; "
@@ -6202,9 +6199,9 @@ def main():
         with st.expander("Recomendaciones"):
             st.markdown(
                 """
-                - Se recomienda en el proceso "1" descargar de forma masiva entre **400 - 500** registros como máximo.  
-                - Para más de **500** registros, lo recomendable es:  
-                    Ejecutar el app en local o dividir el Excel de Url en varios archivos (por ejemplo bloques de 500 registros) y procesarlos por partes.  
+                - Se recomienda en el proceso "1" descargar de forma masiva entre **500 - 700** registros como máximo.  
+                - Para más de **700** registros, lo recomendable es:  
+                    Ejecutar el app en local o dividir el Excel de Url en varios archivos (por ejemplo bloques de 500 o 700 registros) y procesarlos por partes.  
                 - Esto para evitar que el contenedor de **Streamlit Cloud** se quede sin memoria (~1 GB de RAM) 
                 """
             )
