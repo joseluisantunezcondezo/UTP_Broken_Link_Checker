@@ -96,6 +96,39 @@ DEFAULT_RANGE_BYTES = 131_072
 STATUS_BLOCK_SIZE = 200  # número máximo de links por bloque al validar
 MAX_ZIP_BLOCK_MB = 200   # tamaño máximo aproximado por bloque de ZIP (MB)
 
+# --------- Límite de seguridad Streamlit Cloud (solo afecta a la descarga masiva desde Excel) ----------
+MAX_BULK_URLS_CLOUD = 500
+
+
+def is_streamlit_cloud() -> bool:
+    """Detecta si la app está ejecutándose en Streamlit Cloud.
+
+    Se puede forzar de dos maneras:
+    - Configurando st.secrets["is_streamlit_cloud"] = true/false.
+    - Definiendo la variable de entorno IS_STREAMLIT_CLOUD=true/false.
+    En local, por defecto devolverá False.
+    """
+    # 1) Intentar leer desde st.secrets (si existe)
+    try:
+        if "is_streamlit_cloud" in st.secrets:
+            val = st.secrets["is_streamlit_cloud"]
+        else:
+            val = None
+    except Exception:
+        val = None
+
+    # 2) Si no está en secrets, mirar variable de entorno
+    if val is None:
+        val = os.environ.get("IS_STREAMLIT_CLOUD", "")
+
+    if isinstance(val, bool):
+        return val
+
+    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+IS_STREAMLIT_CLOUD = is_streamlit_cloud()
+
 
 # --------- Descarga Masiva ----------
 MAX_INTENTOS_DESCARGA = 7
@@ -232,7 +265,30 @@ ALWAYS_ACTIVE_URL_PREFIXES = [
     "http://www.centroruna.cl/wp-content/uploads/2021/04/edad-adquisicion-1024x576.png",
     "https://www.centroruna.cl/wp-content/uploads/2021/04/edad-adquisicion-1024x576.png",
 
+    # 🔵 NUEVO (feb-2026): URLs revisadas manualmente (Status Link Checker)
+    # Diario La Ley
+    "http://diariolaley.laley.es",
+    "https://diariolaley.laley.es",
+    "http://www.laley.es",
+    "https://www.laley.es",
+
+    # Scopus (home)
+    "http://www.scopus.com",
+    "https://www.scopus.com",
+
+    # Repositorio ULima – bitstreams
+    "https://repositorio.ulima.edu.pe/bitstream/",
+
+    # BBC – noticia específica validada
+    "https://www.bbc.com/mundo/noticias-55668295",
+
+    # Pixabay (home)
+    "https://www.pixabay.com",
+    "https://pixabay.com/",
+
+    # Freepik (ya existente)
     "https://www.freepik.es",
+
 ]
 
 def _is_always_active_url(url: str) -> bool:
@@ -363,6 +419,13 @@ TRUSTED_DOMAINS = [
     "topdoctors.es",
     "unicef.org",
     "centroruna.cl",
+    # 🔵 NUEVO (feb-2026): dominios jurídicos / repositorios adicionales
+    "laley.es",
+    "laleyonline.com",
+    "scopus.com",
+    "repositorio.ulima.edu.pe",
+    "pixabay.com",
+
 
 ]
 
@@ -752,8 +815,10 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
     "laley.es": {
         "trusted_domain": True,
         # 206 = Partial Content por peticiones con Range; el recurso existe
-        "accept_codes": [200, 206, 301, 302, 303, 307, 308],
+        # 403 = acceso restringido / WAF, pero la página sí existe (login / paywall)
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
     },
+
 
     # 🔵 Library of Congress – Memory project
     "loc.gov": {
@@ -4711,13 +4776,31 @@ def page_report_broken_unificado():
                     total_urls = len(df_urls)
                     total_permitidas = len(bulk_urls_archivos)
 
-                    if total_permitidas == 0:
-                        st.warning(
-                            "No se encontraron URLs que terminen en .ppt, .pptx, .pdf, .doc o .docx."
+                    # 🔹 Límite duro de seguridad cuando se ejecuta en Streamlit Cloud
+                    if IS_STREAMLIT_CLOUD and total_permitidas > MAX_BULK_URLS_CLOUD:
+                        st.error(
+                            f"El Excel contiene {total_permitidas} URLs descargables, "
+                            f"lo cual supera el límite de {MAX_BULK_URLS_CLOUD} URLs "
+                            "por ejecución en Streamlit Cloud. "
+                            "Para más de 500 URLs, divide el Excel o ejecuta la herramienta en local."
                         )
+                        st.info(
+                            "📌 Documento demasiado grande para **Streamlit Cloud**; "
+                            "divide el Excel en varios archivos más pequeños "
+                            "o ejecuta la herramienta en tu equipo local."
+                        )
+                        # No habilitar la descarga masiva automática
+                        st.session_state["bulk_has_valid_urls"] = False
+                        st.session_state["bulk_urls_archivos"] = None
                     else:
-                        st.session_state["bulk_has_valid_urls"] = True
-                        st.session_state["bulk_urls_archivos"] = bulk_urls_archivos
+                        if total_permitidas == 0:
+                            st.warning(
+                                "No se encontraron URLs que terminen en .ppt, .pptx, .pdf, .doc o .docx."
+                            )
+                        else:
+                            st.session_state["bulk_has_valid_urls"] = True
+                            st.session_state["bulk_urls_archivos"] = bulk_urls_archivos
+
 
                         # Firma para detectar cambio de Excel
                         try:
@@ -6138,6 +6221,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
