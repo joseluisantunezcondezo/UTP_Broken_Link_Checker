@@ -184,8 +184,56 @@ ALWAYS_ACTIVE_URL_PREFIXES = [
 
     # 🔵 NUEVO: Ministerio de Economía y Finanzas (sitio validado manualmente)
     "https://www.mef.gob.pe/",
-]
 
+    # 🔵 NUEVO (feb-2026): URLs/patrones validados manualmente por UTP
+    # (si el servidor se pone “difícil” o devuelve 403/anti-bot, se fuerzan como ACTIVO)
+    "https://chile.unir.net/revista/ingenieria/pruebas-software/",
+    "https://doi.org/10.1109/ANDESCON61840.2024.10755895",
+    "https://ieeexplore.ieee.org/document/9698145",
+    "https://mi-demo.netlify.app",
+    "https://www.blazemeter.com",
+    "https://www.iso.org/obp/ui/en/",
+    "https://www.iso.org/standard/35733.html",
+    "https://www.iso.org/standard/56737.html",
+    "https://www.iso.org/standard/63712.html",
+    "https://www.iso.org/standard/77520.html",
+    "https://www.iso.org/standard/78176.html",
+    "https://www.iso.org/standard/9001.html",
+    # Nota: este prefijo cubre cualquier variante con parámetros ?utm_...
+    "https://www.iso.org/standards/popular/iso-9000-family",
+    "https://www.pandorafms.com/blog/how-to-analyze-problems-with-root-cause-analysis",
+    # Prefijo general para figuras de ResearchGate (como la de tu ejemplo)
+    "https://www.researchgate.net/figure/",
+    "https://www.seobility.net/es/wiki/diseno-centrado-en-el-usuario",
+    "https://www.w3.org/WAI/",
+    # Studocu – enlaces validados manualmente por UTP
+    "https://www.studocu.com/",
+    "https://studocu.com/",
+        # 🔵 NUEVO (feb-2026): URLs específicas revisadas manualmente (deben ser ACTIVO)
+    # agesandstages.com
+    "http://www.agesandstages.com/",
+    "http://agesandstages.com/",
+    "http://www.agesandstages.com/age-calculator/",
+    "http://agesandstages.com/age-calculator/",
+    "https://www.agesandstages.com/",
+    "https://agesandstages.com/",
+    "https://www.agesandstages.com/age-calculator/",
+    "https://agesandstages.com/age-calculator/",
+
+    # topdoctors.es – artículo de lateralidad cruzada
+    "http://www.topdoctors.es/articulos-medicos/lateralidad-cruzada-mito-o-realidad",
+    "https://www.topdoctors.es/articulos-medicos/lateralidad-cruzada-mito-o-realidad",
+
+    # UNICEF – depresión posparto
+    "http://www.unicef.org/parenting/es/salud-mental/que-es-la-depresion-posparto",
+    "https://www.unicef.org/parenting/es/salud-mental/que-es-la-depresion-posparto",
+
+    # Centro Runa – imagen PNG de edad de adquisición
+    "http://www.centroruna.cl/wp-content/uploads/2021/04/edad-adquisicion-1024x576.png",
+    "https://www.centroruna.cl/wp-content/uploads/2021/04/edad-adquisicion-1024x576.png",
+
+    "https://www.freepik.es",
+]
 
 def _is_always_active_url(url: str) -> bool:
     """
@@ -298,6 +346,24 @@ TRUSTED_DOMAINS = [
     "corteidh.or.cr",
     # 🔵 NUEVO: Ministerio de Economía y Finanzas (Perú)
     "mef.gob.pe",
+
+    # 🔵 NUEVO (feb-2026): dominios académicos / técnicos validados manualmente
+    "iso.org",
+    "w3.org",
+    "ieeexplore.ieee.org",
+    "doi.org",
+    "netlify.app",
+    "blazemeter.com",
+    "researchgate.net",
+    "seobility.net",
+    "pandorafms.com",
+    "unir.net",
+    # 🔵 NUEVO (feb-2026): dominios revisados manualmente
+    "agesandstages.com",
+    "topdoctors.es",
+    "unicef.org",
+    "centroruna.cl",
+
 ]
 
 DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
@@ -403,7 +469,15 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
         "accept_codes": [200, 301, 302, 303, 307, 308, 403, 503],
     },
 
-        # 🔵 Real Academia Española – diccionarios
+    # 🔵 Studocu – protegido por Cloudflare (verificación humana)
+    # Para el checker consideramos que 403/429/503 significan "accesible pero protegido".
+    "studocu.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429, 503],
+    },
+
+
+   # 🔵 Real Academia Española – diccionarios
     "rae.es": {
         "trusted_domain": True,
         "accept_codes": [200, 301, 302, 403, 429],
@@ -448,6 +522,287 @@ DOMAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
         # En caso de problemas de certificado, se fuerza el cliente sin verificación SSL
         "skip_ssl_verify": True,
     },
+
+    # 🔵 NUEVOS (feb-2026): dominios técnicos / académicos con protección anti-bot
+    "iso.org": {
+        "trusted_domain": True,
+        # Consideramos válidos también 403/429 por filtros anti-bot / rate-limit
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "w3.org": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "ieeexplore.ieee.org": {
+        "trusted_domain": True,
+        # IEEE suele proteger contenido con 403/429 frente a bots
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "doi.org": {
+        "trusted_domain": True,
+        # Redirecciones a la editorial + posibles 403/429 en entornos cloud
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "netlify.app": {
+        "trusted_domain": True,
+        # Para tus demos tipo https://mi-demo.netlify.app
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "blazemeter.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "researchgate.net": {
+        "trusted_domain": True,
+        # Suele devolver 403/429 si detecta automatización
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "seobility.net": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "pandorafms.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "unir.net": {
+        "trusted_domain": True,
+        # Cubre chile.unir.net y otros subdominios
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+
+    # 🔵 NUEVO (feb-2026): dominios médicos / educativos revisados
+    "agesandstages.com": {
+        "trusted_domain": True,
+        # Aceptamos también 403/429 por posibles filtros anti-bot
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "topdoctors.es": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "unicef.org": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+    "centroruna.cl": {
+        "trusted_domain": True,
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429],
+    },
+
+    "industry.siemens.com": {
+        "trusted_domain": True,
+        # Para este dominio los adjuntos PDF pueden responder mal al HEAD
+        # (por ejemplo 404/403 o HTML intermedio) aunque el GET devuelva el PDF.
+        # Por eso saltamos el HEAD para binarios y usamos solo GET parcial.
+        "skip_head_for_binary": True,
+    },
+
+        # 🔵 NUEVO (feb-2026): Repositorios institucionales IRIS (OPS / OMS)
+    "iris.paho.org": {
+        "trusted_domain": True,
+        # IRIS-OPS a veces devuelve 403/429/503 a peticiones automáticas
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429, 503],
+        "additional_headers": {
+            # Simulamos navegación real con un Referer creíble
+            "referer": "https://iris.paho.org/",
+        },
+    },
+    "iris.who.int": {
+        "trusted_domain": True,
+        # IRIS-OMS también puede responder con 403/429/503 aunque el ítem exista
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403, 429, 503],
+        "additional_headers": {
+            "referer": "https://iris.who.int/",
+        },
+
+        # ======================================================
+    # NUEVO: Repositorios institucionales (similar a IRIS)
+    # ======================================================
+    "repositorio.ulima.edu.pe": {
+        # Repositorio académico; PDFs devuelven 403 + HTML de login
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+        # Evitar HEAD en PDFs para no disparar falsos CONTENT_TYPE_MISMATCH
+        "skip_head_for_binary": True,
+    },
+
+    # ======================================================
+    # NUEVO: Bancos de imágenes y recursos gráficos
+    # (protección de hotlink / anti-bot)
+    # ======================================================
+    "freepik.es": {
+        "trusted_domain": True,
+        # Aceptamos códigos típicos de WAF / rate-limit como "activo pero protegido"
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403, 429, 503],
+        # Para imágenes / recursos binarios no usamos HEAD (muchos CDNs devuelven HTML intermedio)
+        "skip_head_for_binary": True,
+        "skip_ssl_verify": True,  # <-- añadir esta línea si ves errores de certificado
+    },
+
+    "istockphoto.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+        "skip_head_for_binary": True,
+    },
+    "pixabay.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+        "skip_head_for_binary": True,
+    },
+    "pngtree.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+        "skip_head_for_binary": True,
+    },
+    "vecteezy.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+        "skip_head_for_binary": True,
+    },
+    "wikimedia.org": {
+        # Cubre upload.wikimedia.org y commons.wikimedia.org
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+        "skip_head_for_binary": True,
+    },
+
+    # ======================================================
+    # NUEVO: Acortadores y Google Images (rate-limit / redirect)
+    # ======================================================
+    "app.goo.gl": {
+        # Cubre images.app.goo.gl
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 429],
+    },
+    "acortar.link": {
+        "trusted_domain": True,
+        # 403/429 = bloqueo al bot, 404 sigue siendo roto real
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403, 429],
+    },
+
+    # ======================================================
+    # NUEVO: Medios, portales y tiendas
+    # ======================================================
+    "bbc.com": {
+        "trusted_domain": True,
+        # 403 = paywall / WAF, 404 sigue como roto
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+    "elcomercio.pe": {
+        # Cubre elcomercio.pe y www.elcomercio.pe
+        "trusted_domain": True,
+        # 429 = rate limit (sitio activo, no roto)
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 429],
+    },
+    "gestion.pe": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 429],
+    },
+    "nationalgeographic.com.es": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+    "peru-retail.com": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+    "comercioyjusticia.info": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+    "todocoleccion.net": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+    "urbania.pe": {
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+    "ripley.com.pe": {
+        # Cubre simple.ripley.com.pe
+        "trusted_domain": True,
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+
+    # ======================================================
+    # NUEVO: Gobierno peruano (resources estáticos / WAF)
+    # ======================================================
+    "gob.pe": {
+        # Cubre www.gob.pe, cdn.www.gob.pe, etc.
+        "trusted_domain": True,
+        # 403 = acceso restringido / WAF, 404 se mantiene como roto
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+
+    # ======================================================
+    # NUEVO: Códigos raros de sitios válidos
+    # ======================================================
+
+    "scopus.com": {
+        "trusted_domain": True,
+        # Acceso restringido para bots
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308, 403],
+    },
+
+
+    },
+
+    # 🔵 Diario La Ley – base de datos jurídica (España)
+    "laley.es": {
+        "trusted_domain": True,
+        # 206 = Partial Content por peticiones con Range; el recurso existe
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308],
+    },
+
+    # 🔵 Library of Congress – Memory project
+    "loc.gov": {
+        "trusted_domain": True,
+        # Redirecciones normales dentro de loc.gov
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+        # Si en algún momento usan HTTPS con cadena incompleta, evitamos problemas de certificado
+        "skip_ssl_verify": True,
+    },
+
+    # 🔵 SIS – Seguro Integral de Salud (Perú)
+    "sis.gob.pe": {
+        "trusted_domain": True,
+        # El home responde 206 (Partial Content) con HTML corto, pero el sitio está activo
+        "accept_codes": [200, 206, 301, 302, 303, 307, 308],
+    },
+
+    # 🔵 Edukame – recursos para padres / educación emocional
+    "edukame.com": {
+        "trusted_domain": True,
+        # 403 = acceso restringido / anti-bot, pero el recurso existe
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403],
+    },
+
+    # 🔵 Fundación Wiese
+    "fundacionwiese.org": {
+        "trusted_domain": True,
+        # Códigos normales de página / redirección
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+        # Evita que los errores de “unable to get local issuer certificate” marquen como roto
+        "skip_ssl_verify": True,
+    },
+
+    # 🔵 Gear4music – tienda de instrumentos / audio
+    "gear4music.es": {
+        "trusted_domain": True,
+        # 403 = protección / WAF, pero el sitio y las URLs existen
+        "accept_codes": [200, 301, 302, 303, 307, 308, 403],
+    },
+
+    # 🔵 La Ley Online – base de datos jurídica
+    "laleyonline.com": {
+        "trusted_domain": True,
+        # Aceptamos 200 y redirecciones normales como válidos
+        "accept_codes": [200, 301, 302, 303, 307, 308],
+        # Para minimizar problemas de certificado / proxies intermedios
+        "skip_ssl_verify": True,
+    },
+
 }
 
 # ======================================================
@@ -535,6 +890,40 @@ VALID_CONTENT_PATTERNS = [
     r"twitter:card",
 ]
 VALID_CONTENT_RE = re.compile("|".join(VALID_CONTENT_PATTERNS), re.IGNORECASE)
+
+# Patrones para páginas de verificación humana (Cloudflare / similares)
+HUMAN_VERIFICATION_PATTERNS = [
+    r"verifying\s+you\s+are\s+human",
+    r"checking\s+your\s+browser",
+    r"checking\s+if\s+the\s+site\s+connection\s+is\s+secure",
+    r"checking\s+your\s+browser\s+before\s+accessing",
+]
+
+HUMAN_VERIFICATION_RE = re.compile(
+    "|".join(HUMAN_VERIFICATION_PATTERNS),
+    re.IGNORECASE,
+)
+
+
+def _looks_like_human_verification_page(text: str) -> bool:
+    """
+    Devuelve True si el HTML parece una página de verificación humana
+    (Cloudflare / anti-bot), no una página 404 real.
+    """
+    if not text:
+        return False
+
+    chunk = text[:5000]
+    if HUMAN_VERIFICATION_RE.search(chunk):
+        lower = chunk.lower()
+        # Indicadores típicos de Cloudflare / protección del sitio
+        if "cloudflare" in lower or "ray id" in lower or "protect our site" in lower:
+            return True
+        # Aun sin las palabras anteriores, la frase principal ya es muy específica
+        return True
+
+    return False
+
 
 # ======================================================
 # HELPERS V5 PARA DOMINIOS / SCORING
@@ -1207,12 +1596,10 @@ def init_session_state():
     st.session_state.setdefault("status_invalid_df", None)
     st.session_state.setdefault("status_export_df", None)
 
-
     # 🔹 NUEVO: info del Excel de status para auto-descarga
     st.session_state.setdefault("status_excel_bytes", None)
     st.session_state.setdefault("status_excel_filename", None)
     st.session_state.setdefault("status_excel_auto_downloaded", False)
-
 
     # Estado para PDF to Word Transform
     st.session_state.setdefault("extraccion_zip_bytes", None)   # ya no se usa, pero lo dejamos por compatibilidad
@@ -1860,9 +2247,14 @@ async def _check_one_url_robust_v5(
             "Soft_404": "No",
             "Score": -100,
         }
+    
+    # ✅ 0.b) Config de dominio (para saber si debemos saltarnos HEAD en binarios)
+    domain_config = _get_domain_config(url)
+    skip_head_for_binary = bool(domain_config.get("skip_head_for_binary", False))
 
-    # 1) HEAD para binarios (PDF, DOC, etc.)
-    if _is_binary_candidate(url):
+    # 1) HEAD para binarios (PDF, DOC, etc.) – salvo dominios donde HEAD es poco fiable
+    if _is_binary_candidate(url) and not skip_head_for_binary:
+
         attempt = 0
         while attempt <= max(0, retries):
             attempt += 1
@@ -1995,6 +2387,34 @@ async def _check_one_url_robust_v5(
                 continue
             break
 
+        # ✅ Detección de página de verificación humana (Cloudflare / similares)
+        #    Ejemplo: "Verifying you are human" (Studocu, etc.)
+        if (
+            status is not None
+            and status >= 400
+            and text
+            and _is_html_like(last_ct)
+            and _looks_like_human_verification_page(text)
+        ):
+            content_score = _calculate_content_score(text, final_url)
+            last_detail = (
+                "Página protegida por verificación humana (anti-bot). "
+                "El enlace no parece roto, pero requiere verificación manual en navegador."
+            )
+            return {
+                "Link": url,
+                "Status": "ACTIVO",
+                "HTTP_Code": status,
+                "Detalle": last_detail,
+                "Content_Type": last_ct,
+                "Redirected": "Sí" if redirected else "No",
+                "Timestamp": now_str,
+                "Final_URL": final_url,
+                "Redirect_Chain": " -> ".join(chain),
+                "Soft_404": "No",
+                "Score": content_score,
+            }
+
         # Códigos >= 400 no aceptados por dominio → error
         if not _is_valid_status_code(url, status):
             if status >= 400:
@@ -2002,6 +2422,7 @@ async def _check_one_url_robust_v5(
                 break
 
         ct_valid, ct_reason = validate_content_type_match(url, last_ct)
+
         if not ct_valid:
             soft_flag = True
             last_detail = f"Content-Type incorrecto: {ct_reason}"
@@ -2665,9 +3086,8 @@ class PDFBatchProcessor:
     def _filter_formulas(self, text: str) -> str:
         """En esta versión no se eliminan fórmulas; se devuelve el texto tal cual."""
         return text
-
     def _reformat_sentences(self, text: str) -> str:
-        """Reformatea el texto para dejar una oración por línea."""
+        """Reformatea el texto para dejar una oración por línea sin romper URLs."""
         if not text.strip():
             return text
 
@@ -2686,18 +3106,27 @@ class PDFBatchProcessor:
         # Proteger numeraciones tipo "1. Introducción"
         text = re.sub(r"\b(\d+)\.\s+(?=[A-ZÁÉÍÓÚÑ])", r"\1§ ", text)
 
-        # Cortar oraciones en puntos seguidos
-        text = re.sub(r"(?<!\d)\.\s+(?!\d)", ".\n", text)
+        # ✅ NUEVO: solo cortamos en punto si la siguiente palabra empieza por mayúscula
+        # para NO romper cosas como "https://arxiv. org/abs/..."
+        text = re.sub(
+            r"(?<!\d)\.(\s+)(?=[A-ZÁÉÍÓÚÑ¿])",  # punto + espacios + mayúscula / ¿
+            ".\n",
+            text,
+        )
+
+        # Cortar también después de ")" solo si viene una mayúscula / ¿
         text = re.sub(r"\)\s+(?=[A-ZÁÉÍÓÚÑ¿])", ")\n", text)
 
         # Restaurar marcadores
         text = text.replace("§", ".")
         text = text.replace("[[DOT_PAREN]]", ".")
 
+        # Limpiar líneas vacías
         lines = [line.strip() for line in text.split("\n")]
         lines = [line for line in lines if line]
 
         return "\n".join(lines)
+
 
     def _normalize_text(self, text: str) -> str:
         """Normaliza texto para comparaciones (sin tildes, minúsculas, espacios colapsados)."""
@@ -3218,17 +3647,21 @@ def _iter_paragraphs_with_page(doc) -> List[Tuple[int, "docx.text.paragraph.Para
 
         yield current_page, para
 
+def _strip_invisible(s: str) -> str:
+    """Elimina caracteres invisibles."""
+    return s.replace("\u200b", "").replace("\ufeff", "").strip()
 
 def _extract_urls_from_text(text: str) -> List[str]:
     """
-    Extrae URLs en texto plano, corrigiendo enlaces cortados por guion + espacio
-    o guion + salto de línea (ej. '...spij-ext- web/#/...' o '...cgi- bin/...').
+    Extrae URLs en texto plano de forma ROBUSTA, manejando casos especiales
+    de referencias bibliográficas donde las URLs pueden estar cortadas por saltos de línea.
 
-    Soporta prefijos:
-      - http://, https://
-      - www.
-      - mailto:
-      - tel:
+    Mejoras específicas:
+    - Captura números al final de URLs (ej: /article/view/13, /10.2196/18079)
+    - Evita capturar texto de referencias que no es parte de la URL
+    - Maneja mejor URLs cortadas por saltos de línea en referencias
+    - ✅ NUEVO: Detecta patrones de autores bibliográficos (LoadView-Testing, etc.)
+    - ✅ NUEVO: Evita capturar numeración de secciones (5.Conclusión, etc.)
     """
     s = _strip_invisible(text or "")
     if not s:
@@ -3237,11 +3670,13 @@ def _extract_urls_from_text(text: str) -> List[str]:
     # Prefijos reconocidos como inicio de URL
     prefixes = ("http://", "https://", "www.", "mailto:", "tel:")
 
-    # Conjunto de caracteres válidos dentro de una URL (sin espacios)
-    allowed = set("abcdefghijklmnopqrstuvwxyz"
-                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                  "0123456789"
-                  "-._~:/?#[]@!$&'()*+,;=%")
+    # Conjunto de caracteres válidos dentro de una URL
+    allowed = set(
+        "abcdefghijklmnopqrstuvwxyz"
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "0123456789"
+        "-._~:/?#[]@!$&'()*+,;=%"
+    )
 
     urls: List[str] = []
     i, n = 0, len(s)
@@ -3253,7 +3688,7 @@ def _extract_urls_from_text(text: str) -> List[str]:
             i += 1
             continue
 
-        # Hemos encontrado el inicio de una URL
+        # Inicio de URL encontrado
         start = i
         j = i + len(prefix)
         url_chars = list(s[start:j])
@@ -3262,48 +3697,290 @@ def _extract_urls_from_text(text: str) -> List[str]:
         while j < n:
             c = s[j]
 
-            # Caracter normal permitido en una URL
+            # Carácter normal permitido en URL
             if c in allowed:
                 url_chars.append(c)
                 last_char = c
                 j += 1
                 continue
 
-            # Espacios (incluye saltos de línea internos de Word)
+            # Espacios (pueden ser saltos de línea internos en referencias)
             if c.isspace():
-                # Miramos más adelante saltando todos los espacios
+                # Miramos adelante saltando espacios
                 k = j + 1
                 while k < n and s[k].isspace():
                     k += 1
 
-                # Caso especial: URL cortada por guion de final de línea,
-                # p.ej. '...spij-ext-' + salto + 'web/#/...'  o 'cgi-' + salto + 'bin/...'
-                if k < n and last_char == "-" and s[k] in allowed:
-                    # No añadimos el espacio, continuamos la URL directamente
-                    j = k
-                    continue
+                if k < n:
+                    # ✅ Si aquí comienza una NUEVA URL, cerramos la actual
+                    lower_rest = s[k:].lower()
+                    if any(lower_rest.startswith(p) for p in prefixes):
+                        break
 
-                # Si no es el caso anterior, terminamos la URL en el último carácter válido
+                    next_char = s[k]
+
+                    # 🔹 REGLA MEJORADA: Si el último carácter es / y lo siguiente es un NÚMERO,
+                    # continuamos capturando PERO validamos que no sea inicio de nueva sección
+                    if last_char == "/" and next_char.isdigit():
+                        # Capturamos el número completo
+                        num_end = k
+                        while num_end < n and s[num_end].isdigit():
+                            num_end += 1
+                        
+                        # ✅ VALIDACIÓN CRÍTICA: Verificar qué viene después del número
+                        # Si viene un punto seguido de letra mayúscula, es inicio de sección
+                        if num_end < n:
+                            peek_after_num = s[num_end:min(num_end + 20, n)]
+                            # Patrón: número seguido de "." y letra mayúscula (ej: "91 5.Conclusión")
+                            if re.match(r'^\s*\d*\.?\s*[A-ZÁÉÍÓÚÑ]', peek_after_num):
+                                # Es probable inicio de sección/capítulo, NO capturar más
+                                break
+                            # Patrón: número seguido de espacio y patrón de referencia
+                            if re.match(r'^\s+[A-Z][a-z]+[\-\.]', peek_after_num):
+                                # Es probable nueva referencia bibliográfica
+                                break
+                        
+                        # Si pasa las validaciones, añadimos el número a la URL
+                        url_chars.extend(s[k:num_end])
+                        last_char = s[num_end - 1] if num_end > k else last_char
+                        j = num_end
+                        continue
+
+                    # ✅ Caso: último carácter es número y siguiente también es número
+                    # (ejemplo: 10.2196/ seguido de 18079)
+                    if last_char.isdigit() and next_char.isdigit():
+                        # Capturamos el siguiente segmento numérico
+                        num_end = k
+                        while num_end < n and s[num_end].isdigit():
+                            num_end += 1
+                        
+                        # ✅ VALIDACIÓN: Verificar que después no venga patrón de sección
+                        if num_end < n:
+                            peek_after_num = s[num_end:min(num_end + 20, n)]
+                            if re.match(r'^\s*\.?\s*[A-ZÁÉÍÓÚÑ]', peek_after_num):
+                                break
+                        
+                        url_chars.extend(s[k:num_end])
+                        last_char = s[num_end - 1] if num_end > k else last_char
+                        j = num_end
+                        continue
+
+                    # ✅ Solo unir si el carácter anterior es -, ., / o _
+                    # y el siguiente es alfanumérico (casos normales de URLs cortadas)
+                    if last_char in {"-", ".", "/", "_"} and next_char.isalnum():
+
+                        lookahead = s[k:min(k + 40, n)]
+
+                        # 🔹 FILTROS MEJORADOS para evitar capturar texto de referencias
+
+                        # Referencias tipo "Autor. (2024)"
+                        if re.match(r'^[A-Z][a-z]+\.\s*\(\d{4}', lookahead):
+                            break
+                        if re.match(r'^\(\d{4}', lookahead):
+                            break
+
+                        # ✅ NUEVO: Detectar patrón de autor con guion (ej: "LoadView-Testing")
+                        # Patrón: Palabra(s) capitalizadas con guiones + punto/paréntesis
+                        if re.match(r'^[A-Z][a-zA-Z]*(?:-[A-Z][a-zA-Z]*)+\s*[\.\(]', lookahead):
+                            break
+
+                        # ✅ NUEVO: Detectar patrón simple de autor (ej: "Testing. (2022)")
+                        if re.match(r'^[A-Z][a-z]{3,}\.\s*\(\d{4}', lookahead):
+                            break
+
+                        # Palabra capitalizada que parece inicio de nueva referencia
+                        # (pero permitimos si es parte de un path válido)
+                        if re.match(r'^[A-Z][a-zA-Z]{4,}(?:\s|\.|\()', lookahead):
+                            # Verificamos si NO tiene caracteres típicos de URL después
+                            if not re.search(r'[-_/]', lookahead[:15]):
+                                break
+
+                        # ✅ Analizar el token siguiente al espacio
+                        token_end = k
+                        while token_end < n and not s[token_end].isspace():
+                            token_end += 1
+                        token = s[k:token_end]
+
+                        # 🔹 CASO ESPECIAL MEJORADO: Si el último carácter es / y el token
+                        # es una palabra sin números ni guiones (como "LoadView"),
+                        # probablemente NO es parte de la URL sino texto posterior
+                        if last_char == "/":
+                            token_lower = token.lower()
+                            # Palabras cortas comunes que NO son rutas
+                            stopwords = {
+                                "y", "e", "o", "u",   # conjunciones ES
+                                "and", "or",          # conjunciones EN
+                                "de", "la", "el", "los", "las",
+                                "recuperado", "available", "from",
+                            }
+                            
+                            # ✅ NUEVA VALIDACIÓN: Si el token es alfabético puro
+                            if token.isalpha():
+                                # ✅ Verificar si después del token hay patrón de referencia
+                                peek_after_token = s[token_end:min(token_end + 30, n)]
+                                # Si después viene "-Palabra" o ". (año)", es autor
+                                if re.match(r'^-[A-Z]', peek_after_token):
+                                    break
+                                if re.match(r'\.\s*\(\d{4}', peek_after_token):
+                                    break
+                                
+                                # Si es stopword o palabra larga sin características de URL, cortamos
+                                if (len(token) <= 2 or token_lower in stopwords or 
+                                    (len(token) > 3 and 
+                                     not any(ch.isdigit() for ch in token) and
+                                     "/" not in token and 
+                                     "-" not in token and 
+                                     "_" not in token)):
+                                    break
+
+                        # Si pasa todos los filtros, continuamos
+                        j = k
+                        continue
+
+                # ✅ NUEVO: unir si la URL fue cortada justo antes de un sufijo de archivo
+                # típico (ej. "instruction" + "s_en-en-US.pdf").
+                if last_char.isalpha() and k < n:
+                    token_end = k
+                    while token_end < n and not s[token_end].isspace():
+                        token_end += 1
+                    token = s[k:token_end]
+
+                    # Patrones como "s_en-US.pdf", "es_ES.pdf", "en_en-US.pdf", etc.
+                    if re.match(
+                        r'^[a-zA-Z]{1,3}_[A-Za-z0-9\-_.]+\.(pdf|docx?|pptx?|xlsx?|zip)\b',
+                        token,
+                    ):
+                        url_chars.extend(s[k:token_end])
+                        last_char = s[token_end - 1]
+                        j = token_end
+                        continue
+   
+                # Si no cumple condiciones, terminamos la URL
                 break
 
-            # Puntuación habitual que cierra una URL
-            if c in ".,;:!?)[]{}\"'":
-                break
-
-            # Otro carácter raro -> consideramos fin del enlace
+            # Cualquier otro carácter raro termina la URL
             break
 
-        # Construimos la URL y limpiamos puntuación de cierre
-        url = "".join(url_chars).rstrip(".,;:!?)[]{}\"'")
-        if url:
-            urls.append(url)
+        # ---------------------------------------------------
+        # FASE DE LIMPIEZA FINAL DE LA URL
+        # ---------------------------------------------------
+        url = "".join(url_chars)
 
-        # Continuamos después de lo que hemos analizado
+        # 1) Recortar puntuación básica de cierre
+        url = url.rstrip(".,;:!?)[]{}\"'")
+
+        # ✅ NUEVO: Eliminar sufijos con números seguidos de punto y texto
+        # (casos como "50318591 5.Conclusi" o similar)
+        url = re.sub(r'\s+\d+\.?[A-Za-z]*$', '', url)
+
+        # 2) Eliminar sufijos tipo enumeración
+        url = re.sub(r'[\)\]]\.\d{1,2}$', '', url)   # ").2" o "].2"
+        url = re.sub(r'[\)\]]\d{1,2}$', '', url)     # ")2"  o "]2"
+        url = re.sub(r'/\.\d{1,2}$', '/', url)       # "/.3" -> "/"
+
+        # 3) Limpieza de sufijos de referencias/palabras capitalizadas
+        # PERO: NO eliminar si termina en número (podría ser parte válida de la URL)
+        if url and not url[-1].isdigit():
+            url = re.sub(r'/[A-Z][a-zA-Z]+$', '', url)
+            url = re.sub(r'-[A-Z][a-zA-Z]+$', '', url)
+
+        # 4) Acrónimos en mayúsculas al final
+        if url and not url[-1].isdigit():
+            url = re.sub(r'/[A-Z0-9]{2,}$', '/', url)
+
+        # 5) Remover años y paréntesis capturados accidentalmente
+        url = re.sub(r'\(\d{4}[a-z]?\)$', '', url)
+        url = re.sub(r'\.\(\d{4}$', '', url)
+        
+        # PERO: NO remover /2025 si es parte de un path válido
+        # (solo si parece referencia aislada)
+        if re.search(r'/\d{4}[a-z]?$', url):
+            # Verificar contexto: si tiene más estructura antes, probablemente es válido
+            if url.count('/') <= 2:  # URL muy simple, probablemente es referencia
+                url = re.sub(r'/\d{4}[a-z]?$', '', url)
+
+        # 6) Limpieza final de caracteres raros
+        if url and url[-1] in {'.', ',', ';', ':', '(', '-'}:
+            url = url.rstrip('.,;:(-')
+
+        # ✅ VALIDACIÓN FINAL: Asegurar que la URL no termine con texto extraño
+        # Eliminar patrones como "LoadView" al final si están después de /
+        if url and '/' in url:
+            # Si termina con /Palabra (sin números, guiones, etc.), probablemente sobró
+            if re.search(r'/[A-Z][a-z]+$', url):
+                url = re.sub(r'/[A-Z][a-z]+$', '/', url)
+
+        # ✅ Filtro final: descartar URLs incompletas tipo "https://"
+        if url:
+            parsed = urlparse(url)
+            # Si es http/https PERO sin dominio, no la consideramos
+            if not (parsed.scheme in ("http", "https") and not parsed.netloc):
+                urls.append(url)
+
+        # El bucle externo continuará desde j
         i = j
 
     return urls
 
 
+# ======================================================
+# FUNCIÓN AUXILIAR PARA WORD
+# ======================================================
+
+def _extract_urls_from_paragraph_xml(para, doc_part) -> List[str]:
+    """
+    Extrae URLs desde la estructura XML del párrafo de Word.
+    Versión mejorada que evita duplicados y texto de referencias.
+    """
+    urls: List[str] = []
+
+    WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+    HYPERLINK_TAG = f"{{{WORD_NS}}}hyperlink"
+    INSTR_TEXT_TAG = f"{{{WORD_NS}}}instrText"
+    RID_ATTR = f"{{{REL_NS}}}id"
+
+    p = para._p
+
+    # 1) Hyperlinks explícitos
+    try:
+        for hlink in p.iter():
+            if hlink.tag != HYPERLINK_TAG:
+                continue
+            r_id = hlink.get(RID_ATTR)
+            if not r_id:
+                continue
+            rel = doc_part.rels.get(r_id)
+            if not rel:
+                continue
+            target = str(getattr(rel, "target_ref", "") or "")
+            if not target:
+                continue
+            target = _strip_invisible(target).strip()
+            target = target.strip("()[]{}.,;:!?'\"")
+            
+            # ✅ Limpiar referencias bibliográficas del target
+            target = re.sub(r'\(\d{4}[a-z]?\)$', '', target)
+            target = re.sub(r'/[A-Z][a-zA-Z]+$', '', target)
+            
+            if target:
+                urls.append(target)
+    except Exception:
+        pass
+
+    # 2) Campos HYPERLINK
+    try:
+        for instr in p.iter():
+            if instr.tag != INSTR_TEXT_TAG:
+                continue
+            txt = instr.text or ""
+            for u in _extract_urls_from_text(txt):
+                urls.append(u)
+    except Exception:
+        pass
+
+    return urls
 
 def _extract_urls_from_paragraph_xml(para, doc_part) -> List[str]:
     """
@@ -5461,6 +6138,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
