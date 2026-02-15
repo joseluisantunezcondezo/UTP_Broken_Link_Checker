@@ -1245,6 +1245,11 @@ def apply_global_styles():
     st.markdown(
         """
         <style>
+        /* Reducir tamaño base de fuente para que todo se vea más compacto */
+        html {
+            font-size: 11px;  /* en lugar de 16px */
+        }
+
         [data-testid="stAppViewContainer"] { background: #f3f4f6; }
         [data-testid="stSidebar"] { background: #f9fafb; }
 
@@ -6098,6 +6103,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
