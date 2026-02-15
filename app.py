@@ -1416,7 +1416,7 @@ def apply_global_styles():
         /* 🔵 Barra de progreso tipo "task" (progress-bar-ui-task) */
         .progress-bar-ui-task {
             width: 100%;
-            height: 24px;
+            height: 20px;
             border-radius: 999px;
             background: #e0f2fe; /* azul muy claro */
             box-shadow: inset 0 0 0 1px rgba(37,99,235,0.18);
@@ -6103,6 +6103,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
