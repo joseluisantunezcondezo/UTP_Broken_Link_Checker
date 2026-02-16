@@ -1783,13 +1783,17 @@ def on_change_module():
 # ======================================================
 # DATA / EXPORT
 # ======================================================
+
 def _to_excel_report(df_status: pd.DataFrame) -> bytes:
     """
     Genera el Excel final SOLO con la hoja 'Status', con las columnas:
 
-      name | Archivo | Página/Diapositiva | Link | Status | HTTP_Code | Detalle | Tipo_Problema | link_class
+      name | Archivo | Página/Diapositiva | Link | Status | HTTP_Code | Detalle | Tipo_Problema | link_class | source_url
 
-    Además, pinta la columna Status (ACTIVO=verde, ROTO=rojo).
+    Además:
+    - Pinta la columna Status (ACTIVO=verde, ROTO=rojo).
+    - Deja link_class y source_url como hipervínculos clicables cuando
+      el origen es el Excel de URLs (hay al menos un link_class no vacío).
     """
     from io import BytesIO
     try:
@@ -1799,6 +1803,16 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
 
     # ====== Preparar DataFrame para STATUS ======
     df_detalle = df_status.copy()
+
+    # Detectar si el origen es un Excel de URLs:
+    # (solo en ese caso queremos conservar/usar link_class y source_url)
+    es_excel_urls = False
+    if "link_class" in df_detalle.columns:
+        try:
+            lc = df_detalle["link_class"].astype(str).str.strip()
+            es_excel_urls = lc.ne("").any()
+        except Exception:
+            es_excel_urls = False
 
     # Asegurar nombre de columna Archivo
     if "Nombre del Archivo" in df_detalle.columns and "Archivo" not in df_detalle.columns:
@@ -1815,12 +1829,19 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
         "Detalle",
         "Tipo_Problema",
         "link_class",
+        "source_url",
     ]
 
     # Crear columnas faltantes si no existen
     for col in columnas_objetivo:
         if col not in df_detalle.columns:
             df_detalle[col] = ""
+
+    # Si NO viene de Excel de URLs, vaciamos explícitamente estas columnas
+    # (para ZIPs o archivos individuales deben quedar en blanco)
+    if not es_excel_urls:
+        df_detalle["link_class"] = ""
+        df_detalle["source_url"] = ""
 
     # Reordenar columnas exactamente como se requiere
     df_detalle = df_detalle[columnas_objetivo]
@@ -1830,40 +1851,73 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
         # Hoja única: STATUS
         df_detalle.to_excel(writer, index=False, sheet_name="Status")
 
-        if PatternFill is not None:
-            # Colorear columna Status en la hoja Status
-            green_fill = PatternFill(
-                start_color="C6EFCE",
-                end_color="C6EFCE",
-                fill_type="solid",
-            )
-            red_fill = PatternFill(
-                start_color="F8CBAD",
-                end_color="F8CBAD",
-                fill_type="solid",
-            )
+        # Trabajar sobre la hoja ya escrita
+        ws = writer.sheets.get("Status")
+        if ws is not None:
+            status_col_idx = None
+            link_class_col_idx = None
+            source_url_col_idx = None
 
-            ws = writer.sheets.get("Status")
-            if ws is not None:
-                # Buscar columna Status
-                status_col_idx = None
-                for cell in ws[1]:
-                    if str(cell.value).strip().lower() == "status":
-                        status_col_idx = cell.column
-                        break
+            # Localizar índices de columnas por encabezado
+            for cell in ws[1]:
+                header = str(cell.value).strip().lower() if cell.value is not None else ""
+                if header == "status":
+                    status_col_idx = cell.column
+                elif header == "link_class":
+                    link_class_col_idx = cell.column
+                elif header == "source_url":
+                    source_url_col_idx = cell.column
 
-                if status_col_idx is not None:
-                    for row_idx in range(2, ws.max_row + 1):
-                        cell = ws.cell(row=row_idx, column=status_col_idx)
-                        value = str(cell.value).strip().upper() if cell.value is not None else ""
-                        if value == "ACTIVO":
-                            cell.fill = green_fill
-                        elif value == "ROTO":
-                            cell.fill = red_fill
+            # ---- Colores para Status (igual que antes) ----
+            if PatternFill is not None and status_col_idx is not None:
+                green_fill = PatternFill(
+                    start_color="C6EFCE",
+                    end_color="C6EFCE",
+                    fill_type="solid",
+                )
+                red_fill = PatternFill(
+                    start_color="F8CBAD",
+                    end_color="F8CBAD",
+                    fill_type="solid",
+                )
+
+                for row_idx in range(2, ws.max_row + 1):
+                    c_status = ws.cell(row=row_idx, column=status_col_idx)
+                    value = str(c_status.value).strip().upper() if c_status.value is not None else ""
+                    if value == "ACTIVO":
+                        c_status.fill = green_fill
+                    elif value == "ROTO":
+                        c_status.fill = red_fill
+
+            # ---- Hipervínculos en link_class y source_url ----
+            # Solo cuando viene del Excel de URLs
+            if es_excel_urls:
+                for row_idx in range(2, ws.max_row + 1):
+                    # link_class → hipervínculo azul subrayado
+                    if link_class_col_idx is not None:
+                        c_lc = ws.cell(row=row_idx, column=link_class_col_idx)
+                        val_lc = str(c_lc.value).strip() if c_lc.value is not None else ""
+                        if val_lc:
+                            c_lc.hyperlink = val_lc
+                            try:
+                                c_lc.style = "Hyperlink"
+                            except Exception:
+                                # Si por alguna razón no existe el estilo, lo ignoramos
+                                pass
+
+                    # source_url → hipervínculo azul subrayado
+                    if source_url_col_idx is not None:
+                        c_src = ws.cell(row=row_idx, column=source_url_col_idx)
+                        val_src = str(c_src.value).strip() if c_src.value is not None else ""
+                        if val_src:
+                            c_src.hyperlink = val_src
+                            try:
+                                c_src.style = "Hyperlink"
+                            except Exception:
+                                pass
 
     bio.seek(0)
     return bio.getvalue()
-
 
 def _to_excel_reporte_links(df_links: pd.DataFrame) -> bytes:
     """
@@ -4345,7 +4399,6 @@ def _run_pdf_extraction_streamlit(
 # ======================================================
 # PÁGINAS / MÓDULOS
 # ======================================================
-
 def page_home():
     # Hero principal
     render_hero(
@@ -5020,18 +5073,6 @@ def page_report_broken_unificado():
                                 }
                             elif inner_ext == ".docx":
 
-
-
-
-
-
-
-
-
-
-
-
-
                                 docx_input_paths.append(str(inner_dest))
                                 docx_meta[str(inner_dest)] = {
                                     "display_name": inner_name,
@@ -5316,7 +5357,6 @@ def page_report_broken_unificado():
 
     ui_card_close()
 
-
     # ======================================================
     # 3. Report Word & PPT Link (Word / PPT → Links) – usando rutas
     # ======================================================
@@ -5551,7 +5591,6 @@ def page_report_broken_unificado():
             render_success_chip("Análisis de documentos Word y PPT completado")
 
         ui_card_close()
-
 
     # ======================================================
     # 4. Report Broken Link (Excel → Status)
@@ -5894,7 +5933,6 @@ def page_report_broken_unificado():
                     if "source_url_norm" in df_out.columns:
                         df_out = df_out.drop(columns=["source_url_norm"])
 
-
             # --- 4) Asegurar existencia de columnas name / link_class aunque no haya Excel ---
             for col_extra in ("name", "link_class"):
                 if col_extra not in df_out.columns:
@@ -5954,7 +5992,6 @@ def page_report_broken_unificado():
             progress_bar.empty()
             status_text.empty()
             st.session_state["pipeline_status_done"] = True
-
 
             # 🔹 NUEVO: reset de info del Excel para que se regenere y dispare auto-descarga
             st.session_state["status_excel_filename"] = None
@@ -6055,7 +6092,6 @@ def page_report_broken_unificado():
 # ======================================================
 # MAIN
 # ======================================================
-
 def main():
     st.set_page_config(
         page_title=APP_TITLE,
@@ -6100,9 +6136,9 @@ def main():
         render_hero(title=module, subtitle="Módulo no encontrado.", icon="⚠️")
         st.error("Módulo seleccionado no existe.")
 
-
 if __name__ == "__main__":
     main()
+
 
 
 
