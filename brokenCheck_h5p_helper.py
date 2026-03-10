@@ -662,7 +662,7 @@ def _extract_links_from_txt_h5p_bytes(
     link_class = _safe_str(meta.get("link_class") or meta.get("url"))
     source_url = _safe_str(meta.get("source_url"))
 
-    for idx, line in enumerate(texto.splitlines(), start=1):
+    for line in texto.splitlines():
         line_clean = line.strip()
         if not line_clean:
             continue
@@ -677,7 +677,7 @@ def _extract_links_from_txt_h5p_bytes(
                     "name": nombre,
                     "link_class": link_class,
                     "source_url": source_url,
-                    "Página/Diapositiva": str(idx),
+                    "Página/Diapositiva": "",
                     "Links": url,
                 }
             )
@@ -748,3 +748,4 @@ def run_h5p_txt_link_report_streamlit(
             ]
         )
     return df, errors
+
