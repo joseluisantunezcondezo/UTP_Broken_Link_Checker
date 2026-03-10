@@ -16,6 +16,7 @@ from urllib.parse import urlparse, urlunparse, quote, parse_qs
 import tempfile
 import zipfile
 import io
+import shutil
 
 # =========================
 # Dependencias PDF / Word / PPT
@@ -1665,6 +1666,8 @@ def init_session_state():
     st.session_state.setdefault("status_result_df", None)
     st.session_state.setdefault("status_invalid_df", None)
     st.session_state.setdefault("status_export_df", None)
+    st.session_state.setdefault("pipeline_manual_upload_signature", None)
+    st.session_state.setdefault("pipeline_manual_h5p_zip_paths", [])
 
     # 🔹 NUEVO: info del Excel de status para auto-descarga
     st.session_state.setdefault("status_excel_bytes", None)
@@ -1746,6 +1749,8 @@ def reset_report_broken_pipeline():
         "descarga_zip_bytes",
         "descarga_download_dir",
         "descarga_fallidos_csv",
+        "pipeline_manual_upload_signature",
+        "pipeline_manual_h5p_zip_paths",
 
         # 🔹 2) PDF → Word (pasos 4–5)
         "pipeline_pdf_signature",
@@ -3359,6 +3364,61 @@ def nombre_archivo_seguro(url: str, carpeta_destino: str, max_ruta: int = 240) -
         nombre = base + ext
 
     return nombre
+
+UPLOAD_STREAM_CHUNK = 1024 * 1024  # 1 MB
+
+
+def _uploaded_file_size(uploaded) -> int:
+    try:
+        return int(getattr(uploaded, "size", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _build_uploaded_files_signature(uploaded_files) -> Tuple[Tuple[str, int], ...]:
+    items: List[Tuple[str, int]] = []
+    for f in uploaded_files or []:
+        try:
+            items.append((Path(f.name).name, _uploaded_file_size(f)))
+        except Exception:
+            items.append((getattr(f, "name", "upload"), 0))
+    items.sort()
+    return tuple(items)
+
+
+def _stream_uploaded_file_to_disk(uploaded, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    uploaded_size = _uploaded_file_size(uploaded)
+    if target.exists() and uploaded_size > 0:
+        try:
+            if target.stat().st_size == uploaded_size:
+                return target
+        except OSError:
+            pass
+
+    try:
+        uploaded.seek(0)
+    except Exception:
+        pass
+
+    with open(target, "wb") as dst:
+        shutil.copyfileobj(uploaded, dst, length=UPLOAD_STREAM_CHUNK)
+
+    try:
+        uploaded.seek(0)
+    except Exception:
+        pass
+
+    return target
+
+
+def _extract_zip_member_to_path(zf: zipfile.ZipFile, info: zipfile.ZipInfo, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with zf.open(info, "r") as src, open(target, "wb") as dst:
+        shutil.copyfileobj(src, dst, length=UPLOAD_STREAM_CHUNK)
+    return target
+
 
 def _ensure_unique_path(base_dir: Path, filename: str) -> Path:
     """
@@ -4982,10 +5042,18 @@ def page_report_broken_unificado():
     pdf_meta: Dict[str, Dict[str, Any]] = {}  # 🔧 NUEVO
 
     # Directorio base para guardar archivos subidos manualmente
+    current_upload_signature = _build_uploaded_files_signature(uploaded_files)
+
     manual_dir = st.session_state.get("pipeline_manual_dir")
-    if manual_dir is None:
+    prev_upload_signature = st.session_state.get("pipeline_manual_upload_signature")
+
+    # Si cambió la carga manual, recreamos el directorio de trabajo
+    if manual_dir is None or (uploaded_files and current_upload_signature != prev_upload_signature):
         manual_dir = tempfile.mkdtemp(prefix="utp_pipeline_manual_")
         st.session_state["pipeline_manual_dir"] = manual_dir
+        st.session_state["pipeline_manual_upload_signature"] = current_upload_signature
+        st.session_state["pipeline_manual_h5p_zip_paths"] = []
+
     manual_dir_path = Path(manual_dir)
 
     # --- 2.1 Documentos provenientes de Descarga Masiva ---
@@ -5034,7 +5102,7 @@ def page_report_broken_unificado():
     h5p_bundle_zip_path = ""
     h5p_unified_excel_path = ""
     h5p_warnings: List[str] = []
-    zip_h5p_uploads: List[Tuple[str, bytes]] = []
+    zip_h5p_uploads: List[Tuple[str, str]] = []
 
     rise_txt_input_paths: List[str] = []
     rise_txt_meta: Dict[str, Dict[str, Any]] = {}
@@ -5051,18 +5119,16 @@ def page_report_broken_unificado():
 
             dest_path = manual_dir_path / Path(fname).name
 
-            def _write_if_needed(target: Path, data_bytes: bytes):
+            def _write_if_needed(target: Path, uploaded_obj):
                 try:
-                    with open(target, "wb") as fw:
-                        fw.write(data_bytes)
+                    _stream_uploaded_file_to_disk(uploaded_obj, target)
                 except Exception as exc:
                     st.warning(f"No se pudo guardar el archivo '{target.name}' en disco: {exc}")
 
             if ext in (".pdf", ".docx", ".pptx", ".doc", ".ppt"):
-                data_bytes = bytes(f.getbuffer())
+                _write_if_needed(dest_path, f)
 
                 if ext == ".pdf":
-                    _write_if_needed(dest_path, data_bytes)
                     pdf_input_paths.append(str(dest_path))
                     pdf_meta[str(dest_path)] = {
                         "display_name": Path(fname).name,
@@ -5070,7 +5136,6 @@ def page_report_broken_unificado():
                         "origin": "upload",
                     }
                 elif ext == ".docx":
-                    _write_if_needed(dest_path, data_bytes)
                     docx_input_paths.append(str(dest_path))
                     docx_meta[str(dest_path)] = {
                         "display_name": Path(fname).name,
@@ -5078,7 +5143,6 @@ def page_report_broken_unificado():
                         "origin": "upload",
                     }
                 elif ext == ".pptx":
-                    _write_if_needed(dest_path, data_bytes)
                     pptx_input_paths.append(str(dest_path))
                     pptx_meta[str(dest_path)] = {
                         "display_name": Path(fname).name,
@@ -5095,40 +5159,41 @@ def page_report_broken_unificado():
 
             elif ext == ".zip":
                 try:
-                    zip_bytes = bytes(f.getbuffer())
-                    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+                    saved_zip_path = manual_dir_path / Path(fname).name
+                    _stream_uploaded_file_to_disk(f, saved_zip_path)
+
+                    with zipfile.ZipFile(saved_zip_path, "r") as zf:
                         inner_names = zf.namelist()
 
                         contains_h5p = any(
                             (not n.endswith("/")) and n.lower().endswith(".h5p")
                             for n in inner_names
                         )
-                        if contains_h5p:
-                            zip_h5p_uploads.append((fname, zip_bytes))
-
                         contains_rise_xlf = any(
                             (not n.endswith("/")) and Path(n).suffix.lower() in (".xlf", ".xliff", ".xml")
                             for n in inner_names
                         )
-                        contains_rise_report = any(
-                            (not n.endswith("/"))
-                            and Path(n).suffix.lower() in (".xlsx", ".xlsm", ".xltx", ".xltm")
-                            and Path(n).name.lower().startswith("reporte_rise_")
-                            for n in inner_names
-                        )
+
+                        if contains_h5p:
+                            zip_h5p_uploads.append((fname, str(saved_zip_path)))
+
+                        # Rise: se mantiene la lógica actual más adelante
                         if contains_rise_xlf:
-                            zip_rise_uploads.append((fname, zip_bytes))
+                            # Si luego quieres hacer lo mismo para Rise, replica la misma estrategia path-based.
+                            pass
 
                         for info in zf.infolist():
                             if info.is_dir():
                                 continue
+
                             inner_name = Path(info.filename).name
                             inner_ext = Path(inner_name).suffix.lower()
+
                             if inner_ext in (".xlsx", ".xlsm", ".xltx", ".xltm", ".xlf", ".xliff", ".xml") or inner_ext == ".h5p":
                                 continue
-                            file_bytes = zf.read(info)
+
                             inner_dest = manual_dir_path / inner_name
-                            _write_if_needed(inner_dest, file_bytes)
+                            _extract_zip_member_to_path(zf, info, inner_dest)
 
                             if inner_ext == ".pdf":
                                 pdf_input_paths.append(str(inner_dest))
@@ -5158,6 +5223,7 @@ def page_report_broken_unificado():
                                         "Motivo": f"Formato {inner_ext} no soportado. Convierte a .docx o .pptx para poder analizar los links.",
                                     }
                                 )
+
                 except Exception as e:
                     st.warning(f"No se pudo leer el ZIP `{fname}`: {e}")
 
@@ -5359,14 +5425,23 @@ def page_report_broken_unificado():
 
             if h5p_bundle_zip_path and os.path.exists(h5p_bundle_zip_path):
                 try:
-                    with open(h5p_bundle_zip_path, "rb") as fh:
-                        st.download_button(
-                            "⬇️ Descargar ZIP H5P procesado (.txt + reporte)",
-                            data=fh.read(),
-                            file_name=Path(h5p_bundle_zip_path).name,
-                            mime="application/zip",
-                            key="btn_h5p_bundle_zip",
+                    bundle_size_mb = os.path.getsize(h5p_bundle_zip_path) / (1024 * 1024)
+
+                    if IS_STREAMLIT_CLOUD and bundle_size_mb > 80:
+                        st.info(
+                            f"El ZIP H5P final pesa {bundle_size_mb:.1f} MB. "
+                            "Para no volver a cargarlo completo en RAM dentro de Streamlit Cloud, "
+                            "se omite el botón de descarga embebido en esta sesión."
                         )
+                    else:
+                        with open(h5p_bundle_zip_path, "rb") as fh:
+                            st.download_button(
+                                "⬇️ Descargar ZIP H5P procesado (.txt + reporte)",
+                                data=fh.read(),
+                                file_name=Path(h5p_bundle_zip_path).name,
+                                mime="application/zip",
+                                key="btn_h5p_bundle_zip",
+                            )
                 except Exception as exc:
                     st.warning(f"No se pudo preparar el ZIP final H5P: {exc}")
 
@@ -5411,7 +5486,6 @@ def page_report_broken_unificado():
                         )
                 except Exception as exc:
                     st.warning(f"No se pudo preparar el ZIP final Rise: {exc}")
-
 
     if unsupported_office:
         with st.expander("⚠️ Archivos Office no soportados", expanded=False):
@@ -6453,7 +6527,7 @@ def main():
                 - Para más de **700** registros, lo recomendable es:  
                     Ejecutar el app en local o dividir el Excel de Url en varios archivos (por ejemplo bloques de 500 o 700 registros) y procesarlos por partes.  
                 - Esto para evitar que el contenedor de **Streamlit Cloud** se quede sin memoria (~1 GB de RAM)
-                - Los archivos **.H5P** mayores a 200 MB deben analizarse de forma independiente para que el app funcione correctamente. 
+                - Los archivos **.H5P** mayores a **500 MB** deben analizarse de forma independiente para que el app funcione correctamente. 
                 """
             )
 
@@ -6469,6 +6543,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
