@@ -1,4 +1,4 @@
 # .streamlit/config.toml
 [server]
-maxUploadSize = 500
-maxMessageSize = 500
+maxUploadSize = 200
+maxMessageSize = 200
