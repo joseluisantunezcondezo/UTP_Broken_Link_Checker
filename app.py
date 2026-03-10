@@ -49,12 +49,15 @@ import streamlit as st
 import base64
 import streamlit.components.v1 as components
 
+from brokenCheck_h5p_helper import (
+    process_h5p_zip_uploads,
+    run_h5p_txt_link_report_streamlit,
+)
 
 try:
     import httpx
 except ImportError:
     httpx = None  # type: ignore
-
 
 # ======================================================
 # LOGGING
@@ -124,7 +127,6 @@ def is_streamlit_cloud() -> bool:
 
 
 IS_STREAMLIT_CLOUD = is_streamlit_cloud()
-
 
 # --------- Descarga Masiva ----------
 MAX_INTENTOS_DESCARGA = 7
@@ -1707,6 +1709,12 @@ def init_session_state():
     st.session_state.setdefault("pipeline_docx_meta", {})
     st.session_state.setdefault("pipeline_pptx_paths", [])
     st.session_state.setdefault("pipeline_pptx_meta", {})
+    st.session_state.setdefault("pipeline_h5p_txt_paths", [])
+    st.session_state.setdefault("pipeline_h5p_txt_meta", {})
+    st.session_state.setdefault("pipeline_h5p_report_df", None)
+    st.session_state.setdefault("pipeline_h5p_bundle_zip", None)
+    st.session_state.setdefault("pipeline_h5p_unified_excel", None)
+    st.session_state.setdefault("pipeline_manual_dir", None)
 
 def reset_report_broken_pipeline():
     """
@@ -1752,6 +1760,12 @@ def reset_report_broken_pipeline():
         "pipeline_docx_meta",
         "pipeline_pptx_paths",
         "pipeline_pptx_meta",
+        "pipeline_h5p_txt_paths",
+        "pipeline_h5p_txt_meta",
+        "pipeline_h5p_report_df",
+        "pipeline_h5p_bundle_zip",
+        "pipeline_h5p_unified_excel",
+        "pipeline_manual_dir",
 
         # 🔹 4) Report Broken Link (validación de links, pasos 8–9)
         "pipeline_status_done",
@@ -3598,7 +3612,6 @@ def _build_pdf_file_table(files) -> pd.DataFrame:
         rows.append({"Nombre": name, "Tamaño_MB": size_mb, "Páginas": pages})
     return pd.DataFrame(rows)
 
-
 def _build_word_file_table(files) -> pd.DataFrame:
     """
     Resumen (nombre, tamaño) de DOCX.
@@ -3624,7 +3637,6 @@ def _build_word_file_table(files) -> pd.DataFrame:
                 size_mb = None
         rows.append({"Nombre": name, "Tamaño_MB": size_mb})
     return pd.DataFrame(rows)
-
 
 def _build_pptx_file_table(files) -> pd.DataFrame:
     """
@@ -3652,7 +3664,6 @@ def _build_pptx_file_table(files) -> pd.DataFrame:
         rows.append({"Nombre": name, "Tamaño_MB": size_mb})
     return pd.DataFrame(rows)
 
-
 def _is_page_break_paragraph(para) -> bool:
     """
     Detecta si un párrafo es solamente un salto de página (add_page_break de python-docx).
@@ -3674,7 +3685,6 @@ def _is_page_break_paragraph(para) -> bool:
         return False
 
     return False
-
 
 def _iter_paragraphs_with_page(doc) -> List[Tuple[int, "docx.text.paragraph.Paragraph"]]:
     """
@@ -4911,8 +4921,8 @@ def page_report_broken_unificado():
     # 2. PDF, WORD and PPT to Word Transformation (ZIP) – basado en rutas
     # ======================================================
     render_hero(
-        "Carga Directa de Documentos (PDF's - Word y PPT) y ZIP",
-        "Arrastra tus PDFs, Word, PPT o ZIP y el sistema los procesa automáticamente.",
+        "Carga Directa de Documentos y desde ZIP (PDF's - WORD - PPT y H5P)",
+        "Arrastra tus PDFs, Word, PPT o archivos ZIP (paquetes H5P o colecciones de PDF, Word y PPT) y el sistema los procesa automáticamente.",
         "🧲",
     )
 
@@ -4933,7 +4943,7 @@ def page_report_broken_unificado():
 
     pdf_uploader_key = f"pipeline_pdf_uploader_ultra_{st.session_state.get('pipeline_reset_token', 0)}"
     uploaded_files = st.file_uploader(
-        "Selecciona uno o más archivos PDF, Word, PPT o ZIP (ZIP con PDFs/Word/PPT en su interior)",
+        "Selecciona uno o más archivos PDF, Word, PPT o ZIP (admite paquetes H5P/PDF/WORD/PPT)",
         type=["pdf", "docx", "pptx", "doc", "ppt", "zip"],
         accept_multiple_files=True,
         key=pdf_uploader_key,
@@ -4998,15 +5008,21 @@ def page_report_broken_unificado():
             )
 
     # --- 2.2 Documentos / ZIP subidos manualmente ---
+    h5p_txt_input_paths: List[str] = []
+    h5p_txt_meta: Dict[str, Dict[str, Any]] = {}
+    h5p_report_df = pd.DataFrame()
+    h5p_bundle_zip_path = ""
+    h5p_unified_excel_path = ""
+    h5p_warnings: List[str] = []
+    zip_h5p_uploads: List[Tuple[str, bytes]] = []
+
     if uploaded_files:
         for f in uploaded_files:
             fname = f.name
             ext = Path(fname).suffix.lower()
 
-            # Ruta de destino (sobrescribe si ya existe)
             dest_path = manual_dir_path / Path(fname).name
 
-            # Helper para escribir el archivo
             def _write_if_needed(target: Path, data_bytes: bytes):
                 try:
                     with open(target, "wb") as fw:
@@ -5015,14 +5031,14 @@ def page_report_broken_unificado():
                     st.warning(f"No se pudo guardar el archivo '{target.name}' en disco: {exc}")
 
             if ext in (".pdf", ".docx", ".pptx", ".doc", ".ppt"):
-                data_bytes = f.getbuffer()
+                data_bytes = bytes(f.getbuffer())
 
                 if ext == ".pdf":
                     _write_if_needed(dest_path, data_bytes)
                     pdf_input_paths.append(str(dest_path))
-                    pdf_meta[str(dest_path)] = {          # 🔧 NUEVO
+                    pdf_meta[str(dest_path)] = {
                         "display_name": Path(fname).name,
-                        "source_url": fname,              # nombre del archivo (no Excel)
+                        "source_url": fname,
                         "origin": "upload",
                     }
                 elif ext == ".docx":
@@ -5050,29 +5066,33 @@ def page_report_broken_unificado():
                     )
 
             elif ext == ".zip":
-                # Descomprimir dentro de manual_dir_path
                 try:
-                    zdata = io.BytesIO(f.getbuffer())
-                    with zipfile.ZipFile(zdata, "r") as zf:
+                    zip_bytes = bytes(f.getbuffer())
+                    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+                        inner_names = zf.namelist()
+                        contains_h5p = any((not n.endswith("/")) and n.lower().endswith(".h5p") for n in inner_names)
+                        if contains_h5p:
+                            zip_h5p_uploads.append((fname, zip_bytes))
+
                         for info in zf.infolist():
                             if info.is_dir():
                                 continue
                             inner_name = Path(info.filename).name
                             inner_ext = Path(inner_name).suffix.lower()
+                            if inner_ext in (".xlsx", ".xlsm", ".xltx", ".xltm") or inner_ext == ".h5p":
+                                continue
                             file_bytes = zf.read(info)
-
                             inner_dest = manual_dir_path / inner_name
                             _write_if_needed(inner_dest, file_bytes)
 
                             if inner_ext == ".pdf":
                                 pdf_input_paths.append(str(inner_dest))
-                                pdf_meta[str(inner_dest)] = {   # 🔧 NUEVO
+                                pdf_meta[str(inner_dest)] = {
                                     "display_name": inner_name,
-                                    "source_url": fname,        # nombre del ZIP
+                                    "source_url": fname,
                                     "origin": "upload_zip",
                                 }
                             elif inner_ext == ".docx":
-
                                 docx_input_paths.append(str(inner_dest))
                                 docx_meta[str(inner_dest)] = {
                                     "display_name": inner_name,
@@ -5096,12 +5116,28 @@ def page_report_broken_unificado():
                 except Exception as e:
                     st.warning(f"No se pudo leer el ZIP `{fname}`: {e}")
 
-    has_docs = bool(pdf_input_paths or docx_input_paths or pptx_input_paths)
+    if zip_h5p_uploads:
+        h5p_result = process_h5p_zip_uploads(zip_h5p_uploads, manual_dir)
+        h5p_txt_input_paths = list(h5p_result.get("txt_paths") or [])
+        h5p_txt_meta = dict(h5p_result.get("txt_meta") or {})
+        h5p_report_df = h5p_result.get("report_df")
+        if h5p_report_df is None:
+            h5p_report_df = pd.DataFrame()
+        h5p_bundle_zip_path = str(h5p_result.get("bundle_zip_path") or "")
+        h5p_unified_excel_path = str(h5p_result.get("unified_excel_path") or "")
+        h5p_warnings = list(h5p_result.get("warnings") or [])
+
+        if h5p_warnings:
+            with st.expander("⚠️ Advertencias del procesamiento H5P", expanded=False):
+                for warn in h5p_warnings:
+                    st.write(f"- {warn}")
+
+    has_docs = bool(pdf_input_paths or docx_input_paths or pptx_input_paths or h5p_txt_input_paths)
 
     step_pdf1.markdown(
         render_step_header_html(
             "4",
-            "Agregar documentos (PDF, Word, PPT) directos o desde ZIP",
+            "Agregar documentos directos o desde ZIP (PDF's - WORD - PPT y H5P)",
             "ok" if has_docs else "warn",
         ),
         unsafe_allow_html=True,
@@ -5109,7 +5145,7 @@ def page_report_broken_unificado():
 
     if not has_docs:
         st.caption(
-            "Agrega documentos manualmente o ejecuta primero la Descarga Masiva para que lleguen aquí automáticamente."
+            "Agrega documentos manualmente o ejecuta primero la Descarga Masiva para que lleguen aquí automáticamente. También puedes cargar ZIP con archivos H5P y su reporte Excel."
         )
         ui_card_close()
         return
@@ -5119,6 +5155,7 @@ def page_report_broken_unificado():
     all_paths_for_signature.extend(pdf_input_paths)
     all_paths_for_signature.extend(docx_input_paths)
     all_paths_for_signature.extend(pptx_input_paths)
+    all_paths_for_signature.extend(h5p_txt_input_paths)
 
     signature: List[Tuple[str, int]] = []
     for p in all_paths_for_signature:
@@ -5141,6 +5178,11 @@ def page_report_broken_unificado():
         st.session_state["pipeline_docx_meta"] = None
         st.session_state["pipeline_pptx_paths"] = None
         st.session_state["pipeline_pptx_meta"] = None
+        st.session_state["pipeline_h5p_txt_paths"] = None
+        st.session_state["pipeline_h5p_txt_meta"] = None
+        st.session_state["pipeline_h5p_report_df"] = None
+        st.session_state["pipeline_h5p_bundle_zip"] = None
+        st.session_state["pipeline_h5p_unified_excel"] = None
         st.session_state["pipeline_word_done"] = False
         st.session_state["pipeline_df_links"] = None
         st.session_state["pipeline_word_errors"] = None
@@ -5209,6 +5251,48 @@ def page_report_broken_unificado():
         with st.expander("Archivos PPTX seleccionados", expanded=False):
             df_files_ppt = _build_office_table_from_paths(pptx_input_paths, pptx_meta)
             st.dataframe(df_files_ppt, use_container_width=True, height=260)
+
+    if h5p_txt_input_paths:
+        with st.expander("Archivos H5P procesados a TXT", expanded=False):
+            rows_h5p = []
+            for p in h5p_txt_input_paths:
+                meta_h = h5p_txt_meta.get(p, {})
+                rows_h5p.append(
+                    {
+                        "Nombre TXT": Path(p).name,
+                        "content_id": meta_h.get("Archivo", ""),
+                        "title": meta_h.get("name", ""),
+                        "url": meta_h.get("link_class", ""),
+                        "ZIP origen": meta_h.get("zip_name", ""),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows_h5p), use_container_width=True, height=260)
+
+            if h5p_unified_excel_path and os.path.exists(h5p_unified_excel_path):
+                try:
+                    with open(h5p_unified_excel_path, "rb") as fh:
+                        st.download_button(
+                            "⬇️ Descargar reporte H5P unificado",
+                            data=fh.read(),
+                            file_name=Path(h5p_unified_excel_path).name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_h5p_unified_excel",
+                        )
+                except Exception as exc:
+                    st.warning(f"No se pudo preparar el Excel unificado H5P: {exc}")
+
+            if h5p_bundle_zip_path and os.path.exists(h5p_bundle_zip_path):
+                try:
+                    with open(h5p_bundle_zip_path, "rb") as fh:
+                        st.download_button(
+                            "⬇️ Descargar ZIP H5P procesado (.txt + reporte)",
+                            data=fh.read(),
+                            file_name=Path(h5p_bundle_zip_path).name,
+                            mime="application/zip",
+                            key="btn_h5p_bundle_zip",
+                        )
+                except Exception as exc:
+                    st.warning(f"No se pudo preparar el ZIP final H5P: {exc}")
 
     if unsupported_office:
         with st.expander("⚠️ Archivos Office no soportados", expanded=False):
@@ -5308,6 +5392,11 @@ def page_report_broken_unificado():
             st.session_state["pipeline_docx_meta"] = combined_docx_meta
             st.session_state["pipeline_pptx_paths"] = pptx_input_paths
             st.session_state["pipeline_pptx_meta"] = pptx_meta
+            st.session_state["pipeline_h5p_txt_paths"] = h5p_txt_input_paths
+            st.session_state["pipeline_h5p_txt_meta"] = h5p_txt_meta
+            st.session_state["pipeline_h5p_report_df"] = h5p_report_df
+            st.session_state["pipeline_h5p_bundle_zip"] = h5p_bundle_zip_path
+            st.session_state["pipeline_h5p_unified_excel"] = h5p_unified_excel_path
 
             st.session_state["pipeline_pdf_results"] = resultados_pdf
             st.session_state["pipeline_pdf_errors"] = errores_pdf
@@ -5315,7 +5404,7 @@ def page_report_broken_unificado():
             st.session_state["extraccion_errores"] = errores_pdf
             st.session_state["extraccion_zip_bytes"] = None
             st.session_state["pipeline_pdf_done"] = True
-            st.session_state["pipeline_word_inputs_count"] = len(combined_docx_paths)
+            st.session_state["pipeline_word_inputs_count"] = len(combined_docx_paths) + len(h5p_txt_input_paths)
             st.session_state["pipeline_ppt_inputs_count"] = len(pptx_input_paths)
 
             # Limpiamos textos de progreso y dejamos solo el chip
@@ -5361,8 +5450,8 @@ def page_report_broken_unificado():
     # 3. Report Word & PPT Link (Word / PPT → Links) – usando rutas
     # ======================================================
     render_hero(
-        "Report Word & PPT Link (Excel)",
-        "Genera un Excel con todos los links detectados en documentos Word y PPT usando archivos en disco.",
+        "Report Word, PPT & H5P Link (Excel)",
+        "Genera un Excel con todos los links detectados en documentos Word, PPT y TXT generados desde H5P usando archivos en disco.",
         "📊",
     )
 
@@ -5372,14 +5461,16 @@ def page_report_broken_unificado():
     docx_meta = st.session_state.get("pipeline_docx_meta") or {}
     pptx_paths = st.session_state.get("pipeline_pptx_paths") or []
     pptx_meta = st.session_state.get("pipeline_pptx_meta") or []
+    h5p_txt_paths = st.session_state.get("pipeline_h5p_txt_paths") or []
+    h5p_txt_meta = st.session_state.get("pipeline_h5p_txt_meta") or {}
 
-    total_docs_inputs = len(docx_paths) + len(pptx_paths)
+    total_docs_inputs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths)
 
     step_word1 = st.empty()
     step_word1.markdown(
         render_step_header_html(
             "6",
-            "Agregar documentos Word's y PPT's (directos o desde ZIP)",
+            "Agregar documentos Word, PPT y H5P TXT (directos o desde ZIP)",
             "ok" if total_docs_inputs > 0 else "warn",
         ),
         unsafe_allow_html=True,
@@ -5388,7 +5479,7 @@ def page_report_broken_unificado():
     if total_docs_inputs == 0:
         st.caption(
             "Los documentos Word se generan automáticamente a partir de los PDFs del paso anterior; "
-            "los Word/PPT que cargues o descargues también se incorporan aquí."
+            "los Word/PPT que cargues o descargues también se incorporan aquí. Los ZIP con H5P generan TXT que también se analizan en esta fase."
         )
         ui_card_close()
     else:
@@ -5423,8 +5514,23 @@ def page_report_broken_unificado():
                 df_files_ppt = _build_word_table_from_paths(pptx_paths, pptx_meta)
                 st.dataframe(df_files_ppt, use_container_width=True, height=260)
 
-        # Procesar Word & PPT (Paso 7)
-        render_simple_step_header("7", "Procesar todos los documentos Word's y PPT's")
+        if h5p_txt_paths:
+            with st.expander("Archivos TXT generados desde H5P a analizar", expanded=False):
+                rows_h5p = []
+                for p in h5p_txt_paths:
+                    meta_h = h5p_txt_meta.get(p, {})
+                    rows_h5p.append(
+                        {
+                            "Nombre": Path(p).name,
+                            "content_id": meta_h.get("Archivo", ""),
+                            "title": meta_h.get("name", ""),
+                            "url": meta_h.get("link_class", ""),
+                        }
+                    )
+                st.dataframe(pd.DataFrame(rows_h5p), use_container_width=True, height=260)
+
+        # Procesar Word, PPT & H5P (Paso 7)
+        render_simple_step_header("7", "Procesar todos los documentos Word, PPT y H5P")
 
         progress_bar_word = st.empty()
         status_text_word = st.empty()
@@ -5437,14 +5543,15 @@ def page_report_broken_unificado():
         if auto_trigger_word:
             try:
                 render_progress_bar_ui_task(progress_bar_word, 0.0)
-                status_text_word.markdown("Iniciando análisis de documentos Word y PPT...")
+                status_text_word.markdown("Iniciando análisis de documentos Word, PPT y H5P...")
 
                 all_rows: List[Dict[str, Any]] = []
                 errores: List[Dict[str, Any]] = []
 
                 total_word = len(docx_paths)
                 total_ppt = len(pptx_paths)
-                total_docs = total_word + total_ppt
+                total_h5p = len(h5p_txt_paths)
+                total_docs = total_word + total_ppt + total_h5p
                 processed = 0
 
                 # Word (DOCX)
@@ -5515,6 +5622,40 @@ def page_report_broken_unificado():
                                     {"Archivo": str(path_obj), "Error": str(e)}
                                 )
 
+                # H5P TXT
+                if h5p_txt_paths:
+                    with st.spinner("Buscando enlaces dentro de los TXT generados desde H5P..."):
+                        for p in h5p_txt_paths:
+                            processed += 1
+                            path_obj = Path(p)
+                            meta_info = h5p_txt_meta.get(p, {})
+                            display_name = meta_info.get("display_name", path_obj.name)
+
+                            status_text_word.markdown(
+                                f"Analizando H5P TXT **{processed}/{total_docs}** · `{display_name}`"
+                            )
+                            render_progress_bar_ui_task(
+                                progress_bar_word,
+                                processed / max(1, total_docs),
+                            )
+
+                            try:
+                                with open(path_obj, "rb") as fh:
+                                    data_bytes = fh.read()
+                                rows = run_h5p_txt_link_report_streamlit(
+                                    [str(path_obj)],
+                                    txt_meta={str(path_obj): meta_info},
+                                    progress_bar=progress_bar_word,
+                                    status_text=status_text_word,
+                                    url_extractor=_extract_urls_from_text,
+                                )[0].to_dict("records")
+                                all_rows.extend(rows)
+                            except Exception as e:
+                                logger.error(f"Error procesando H5P TXT {path_obj}: {e}")
+                                errores.append(
+                                    {"Archivo": str(path_obj), "Error": str(e)}
+                                )
+
                 if all_rows:
                     df_links = pd.DataFrame(all_rows)
                     df_links = df_links.sort_values(
@@ -5524,6 +5665,9 @@ def page_report_broken_unificado():
                     df_links = pd.DataFrame(
                         columns=[
                             "Nombre del Archivo",
+                            "Archivo",
+                            "name",
+                            "link_class",
                             "Página/Diapositiva",
                             "Links",
                             "source_url",
@@ -5538,7 +5682,7 @@ def page_report_broken_unificado():
                 progress_bar_word.empty()
                 status_text_word.empty()
 
-                total_docs = len(docx_paths) + len(pptx_paths)
+                total_docs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths)
                 total_links = len(df_links)
                 docs_con_links = (
                     df_links["Nombre del Archivo"].nunique()
@@ -5565,7 +5709,7 @@ def page_report_broken_unificado():
         else:
             df_links = st.session_state.get("pipeline_df_links")
             if df_links is not None:
-                total_docs = len(docx_paths) + len(pptx_paths)
+                total_docs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths)
                 total_links = len(df_links)
                 docs_con_links = (
                     df_links["Nombre del Archivo"].nunique()
@@ -5588,7 +5732,7 @@ def page_report_broken_unificado():
 
         # 🔹 Mostrar chip verde cuando el análisis ya terminó
         if st.session_state.get("pipeline_word_done", False):
-            render_success_chip("Análisis de documentos Word y PPT completado")
+            render_success_chip("Análisis de documentos Word, PPT y H5P completado")
 
         ui_card_close()
 
@@ -5611,7 +5755,7 @@ def page_report_broken_unificado():
     step_excel1.markdown(
         render_step_header_html(
             "8",
-            "Procesar Reporte Link (desde documentos Word)",
+            "Procesar Reporte Link (desde documentos Word, PPT y H5P)",
             "ok" if has_links else "warn",
         ),
         unsafe_allow_html=True,
@@ -5619,7 +5763,7 @@ def page_report_broken_unificado():
 
     if not has_links:
         st.caption(
-            "Primero procesa los documentos Word en el paso 7 para generar el reporte de links."
+            "Primero procesa los documentos Word, PPT o H5P en el paso 7 para generar el reporte de links."
         )
         ui_card_close()
         return
@@ -5874,6 +6018,12 @@ def page_report_broken_unificado():
             meta_cols: List[str] = []
             if "Nombre del Archivo" in df_src.columns:
                 meta_cols.append("Nombre del Archivo")
+            if "Archivo" in df_src.columns:
+                meta_cols.append("Archivo")
+            if "name" in df_src.columns:
+                meta_cols.append("name")
+            if "link_class" in df_src.columns:
+                meta_cols.append("link_class")
             if "Página/Diapositiva" in df_src.columns:
                 meta_cols.append("Página/Diapositiva")
             if "source_url" in df_src.columns:
@@ -5983,7 +6133,7 @@ def page_report_broken_unificado():
             df_out = _standardize_status_column(df_out)
 
             df_export = df_out.copy()
-            if "Nombre del Archivo" in df_export.columns:
+            if "Nombre del Archivo" in df_export.columns and "Archivo" not in df_export.columns:
                 df_export = df_export.rename(columns={"Nombre del Archivo": "Archivo"})
 
             st.session_state.status_result_df = df_out
@@ -6138,6 +6288,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
