@@ -54,6 +54,11 @@ from brokenCheck_h5p_helper import (
     run_h5p_txt_link_report_streamlit,
 )
 
+from brokenCheck_rise_helper import (
+    process_rise_zip_uploads,
+    run_rise_txt_link_report_streamlit,
+)
+
 try:
     import httpx
 except ImportError:
@@ -1709,11 +1714,19 @@ def init_session_state():
     st.session_state.setdefault("pipeline_docx_meta", {})
     st.session_state.setdefault("pipeline_pptx_paths", [])
     st.session_state.setdefault("pipeline_pptx_meta", {})
+
     st.session_state.setdefault("pipeline_h5p_txt_paths", [])
     st.session_state.setdefault("pipeline_h5p_txt_meta", {})
     st.session_state.setdefault("pipeline_h5p_report_df", None)
     st.session_state.setdefault("pipeline_h5p_bundle_zip", None)
     st.session_state.setdefault("pipeline_h5p_unified_excel", None)
+
+    st.session_state.setdefault("pipeline_rise_txt_paths", [])
+    st.session_state.setdefault("pipeline_rise_txt_meta", {})
+    st.session_state.setdefault("pipeline_rise_report_df", None)
+    st.session_state.setdefault("pipeline_rise_bundle_zip", None)
+    st.session_state.setdefault("pipeline_rise_unified_excel", None)
+
     st.session_state.setdefault("pipeline_manual_dir", None)
 
 def reset_report_broken_pipeline():
@@ -1760,11 +1773,19 @@ def reset_report_broken_pipeline():
         "pipeline_docx_meta",
         "pipeline_pptx_paths",
         "pipeline_pptx_meta",
+
         "pipeline_h5p_txt_paths",
         "pipeline_h5p_txt_meta",
         "pipeline_h5p_report_df",
         "pipeline_h5p_bundle_zip",
         "pipeline_h5p_unified_excel",
+
+        "pipeline_rise_txt_paths",
+        "pipeline_rise_txt_meta",
+        "pipeline_rise_report_df",
+        "pipeline_rise_bundle_zip",
+        "pipeline_rise_unified_excel",
+
         "pipeline_manual_dir",
 
         # 🔹 4) Report Broken Link (validación de links, pasos 8–9)
@@ -4254,7 +4275,6 @@ def _run_word_link_report_streamlit(
 
     return df, errores
 
-
 def _run_pptx_link_report_streamlit(
     pptx_paths: List[str],
     *,
@@ -4921,8 +4941,8 @@ def page_report_broken_unificado():
     # 2. PDF, WORD and PPT to Word Transformation (ZIP) – basado en rutas
     # ======================================================
     render_hero(
-        "Carga Directa de Documentos y desde ZIP (PDF's - WORD - PPT y H5P)",
-        "Arrastra tus PDFs, Word, PPT o archivos ZIP (paquetes H5P o colecciones de PDF, Word y PPT) y el sistema los procesa automáticamente.",
+        "Carga Directa de Documentos y desde ZIP (PDF's - WORD - PPT - H5P y XLF-Rise)",
+        "Arrastra tus PDFs, Word, PPT o archivos ZIP (paquetes H5P/XLF-Rise o colecciones de PDF, Word y PPT) y el sistema los procesa automáticamente.",
         "🧲",
     )
 
@@ -4943,11 +4963,11 @@ def page_report_broken_unificado():
 
     pdf_uploader_key = f"pipeline_pdf_uploader_ultra_{st.session_state.get('pipeline_reset_token', 0)}"
     uploaded_files = st.file_uploader(
-        "Selecciona uno o más archivos PDF, Word, PPT o ZIP (admite paquetes H5P/PDF/WORD/PPT)",
+        "Selecciona uno o más archivos PDF, Word, PPT o ZIP (admite paquetes H5P / XLF-Rise / PDF / WORD / PPT)",
         type=["pdf", "docx", "pptx", "doc", "ppt", "zip"],
         accept_multiple_files=True,
         key=pdf_uploader_key,
-        help="Si ya ejecutaste la Descarga Masiva, aquí llegarán automáticamente los documentos.",
+        help="Si ya ejecutaste la Descarga Masiva, aquí llegarán automáticamente los documentos. También puedes cargar ZIP con H5P o ZIP con XLF/XLIFF + reporte Rise.",
     )
 
     # --- NUEVO: listas basadas en rutas + meta ---
@@ -5016,6 +5036,14 @@ def page_report_broken_unificado():
     h5p_warnings: List[str] = []
     zip_h5p_uploads: List[Tuple[str, bytes]] = []
 
+    rise_txt_input_paths: List[str] = []
+    rise_txt_meta: Dict[str, Dict[str, Any]] = {}
+    rise_report_df = pd.DataFrame()
+    rise_bundle_zip_path = ""
+    rise_unified_excel_path = ""
+    rise_warnings: List[str] = []
+    zip_rise_uploads: List[Tuple[str, bytes]] = []
+
     if uploaded_files:
         for f in uploaded_files:
             fname = f.name
@@ -5070,16 +5098,33 @@ def page_report_broken_unificado():
                     zip_bytes = bytes(f.getbuffer())
                     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
                         inner_names = zf.namelist()
-                        contains_h5p = any((not n.endswith("/")) and n.lower().endswith(".h5p") for n in inner_names)
+
+                        contains_h5p = any(
+                            (not n.endswith("/")) and n.lower().endswith(".h5p")
+                            for n in inner_names
+                        )
                         if contains_h5p:
                             zip_h5p_uploads.append((fname, zip_bytes))
+
+                        contains_rise_xlf = any(
+                            (not n.endswith("/")) and Path(n).suffix.lower() in (".xlf", ".xliff", ".xml")
+                            for n in inner_names
+                        )
+                        contains_rise_report = any(
+                            (not n.endswith("/"))
+                            and Path(n).suffix.lower() in (".xlsx", ".xlsm", ".xltx", ".xltm")
+                            and Path(n).name.lower().startswith("reporte_rise_")
+                            for n in inner_names
+                        )
+                        if contains_rise_xlf:
+                            zip_rise_uploads.append((fname, zip_bytes))
 
                         for info in zf.infolist():
                             if info.is_dir():
                                 continue
                             inner_name = Path(info.filename).name
                             inner_ext = Path(inner_name).suffix.lower()
-                            if inner_ext in (".xlsx", ".xlsm", ".xltx", ".xltm") or inner_ext == ".h5p":
+                            if inner_ext in (".xlsx", ".xlsm", ".xltx", ".xltm", ".xlf", ".xliff", ".xml") or inner_ext == ".h5p":
                                 continue
                             file_bytes = zf.read(info)
                             inner_dest = manual_dir_path / inner_name
@@ -5132,12 +5177,34 @@ def page_report_broken_unificado():
                 for warn in h5p_warnings:
                     st.write(f"- {warn}")
 
-    has_docs = bool(pdf_input_paths or docx_input_paths or pptx_input_paths or h5p_txt_input_paths)
+    if zip_rise_uploads:
+        rise_result = process_rise_zip_uploads(zip_rise_uploads, manual_dir)
+        rise_txt_input_paths = list(rise_result.get("txt_paths") or [])
+        rise_txt_meta = dict(rise_result.get("txt_meta") or {})
+        rise_report_df = rise_result.get("report_df")
+        if rise_report_df is None:
+            rise_report_df = pd.DataFrame()
+        rise_bundle_zip_path = str(rise_result.get("bundle_zip_path") or "")
+        rise_unified_excel_path = str(rise_result.get("unified_excel_path") or "")
+        rise_warnings = list(rise_result.get("warnings") or [])
+
+        if rise_warnings:
+            with st.expander("⚠️ Advertencias del procesamiento XLF / Rise", expanded=False):
+                for warn in rise_warnings:
+                    st.write(f"- {warn}")
+
+    has_docs = bool(
+        pdf_input_paths
+        or docx_input_paths
+        or pptx_input_paths
+        or h5p_txt_input_paths
+        or rise_txt_input_paths
+    )
 
     step_pdf1.markdown(
         render_step_header_html(
             "4",
-            "Agregar documentos directos o desde ZIP (PDF's - WORD - PPT y H5P)",
+            "Agregar documentos directos o desde ZIP (PDF's - WORD - PPT, H5P y XLF-Rise)",
             "ok" if has_docs else "warn",
         ),
         unsafe_allow_html=True,
@@ -5145,7 +5212,7 @@ def page_report_broken_unificado():
 
     if not has_docs:
         st.caption(
-            "Agrega documentos manualmente o ejecuta primero la Descarga Masiva para que lleguen aquí automáticamente. También puedes cargar ZIP con archivos H5P y su reporte Excel."
+            "Agrega documentos manualmente o ejecuta primero la Descarga Masiva para que lleguen aquí automáticamente. También puedes cargar ZIP con archivos H5P o ZIP con XLF/XLIFF/XML y su reporte Excel Rise."
         )
         ui_card_close()
         return
@@ -5156,6 +5223,7 @@ def page_report_broken_unificado():
     all_paths_for_signature.extend(docx_input_paths)
     all_paths_for_signature.extend(pptx_input_paths)
     all_paths_for_signature.extend(h5p_txt_input_paths)
+    all_paths_for_signature.extend(rise_txt_input_paths)
 
     signature: List[Tuple[str, int]] = []
     for p in all_paths_for_signature:
@@ -5178,11 +5246,19 @@ def page_report_broken_unificado():
         st.session_state["pipeline_docx_meta"] = None
         st.session_state["pipeline_pptx_paths"] = None
         st.session_state["pipeline_pptx_meta"] = None
+
         st.session_state["pipeline_h5p_txt_paths"] = None
         st.session_state["pipeline_h5p_txt_meta"] = None
         st.session_state["pipeline_h5p_report_df"] = None
         st.session_state["pipeline_h5p_bundle_zip"] = None
         st.session_state["pipeline_h5p_unified_excel"] = None
+
+        st.session_state["pipeline_rise_txt_paths"] = None
+        st.session_state["pipeline_rise_txt_meta"] = None
+        st.session_state["pipeline_rise_report_df"] = None
+        st.session_state["pipeline_rise_bundle_zip"] = None
+        st.session_state["pipeline_rise_unified_excel"] = None
+
         st.session_state["pipeline_word_done"] = False
         st.session_state["pipeline_df_links"] = None
         st.session_state["pipeline_word_errors"] = None
@@ -5294,6 +5370,49 @@ def page_report_broken_unificado():
                 except Exception as exc:
                     st.warning(f"No se pudo preparar el ZIP final H5P: {exc}")
 
+    if rise_txt_input_paths:
+        with st.expander("Archivos XLF / Rise procesados a TXT", expanded=False):
+            rows_rise = []
+            for p in rise_txt_input_paths:
+                meta_r = rise_txt_meta.get(p, {})
+                rows_rise.append(
+                    {
+                        "Nombre TXT": Path(p).name,
+                        "curso_nombre": meta_r.get("name", ""),
+                        "archivo_xliff": meta_r.get("Archivo", ""),
+                        "url": meta_r.get("link_class", ""),
+                        "ZIP origen": meta_r.get("zip_name", ""),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows_rise), use_container_width=True, height=260)
+
+            if rise_unified_excel_path and os.path.exists(rise_unified_excel_path):
+                try:
+                    with open(rise_unified_excel_path, "rb") as fh:
+                        st.download_button(
+                            "⬇️ Descargar reporte Rise unificado",
+                            data=fh.read(),
+                            file_name=Path(rise_unified_excel_path).name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_rise_unified_excel",
+                        )
+                except Exception as exc:
+                    st.warning(f"No se pudo preparar el Excel unificado Rise: {exc}")
+
+            if rise_bundle_zip_path and os.path.exists(rise_bundle_zip_path):
+                try:
+                    with open(rise_bundle_zip_path, "rb") as fh:
+                        st.download_button(
+                            "⬇️ Descargar ZIP Rise procesado (.txt + reporte)",
+                            data=fh.read(),
+                            file_name=Path(rise_bundle_zip_path).name,
+                            mime="application/zip",
+                            key="btn_rise_bundle_zip",
+                        )
+                except Exception as exc:
+                    st.warning(f"No se pudo preparar el ZIP final Rise: {exc}")
+
+
     if unsupported_office:
         with st.expander("⚠️ Archivos Office no soportados", expanded=False):
             df_unsup = pd.DataFrame(unsupported_office)
@@ -5398,13 +5517,23 @@ def page_report_broken_unificado():
             st.session_state["pipeline_h5p_bundle_zip"] = h5p_bundle_zip_path
             st.session_state["pipeline_h5p_unified_excel"] = h5p_unified_excel_path
 
+            st.session_state["pipeline_rise_txt_paths"] = rise_txt_input_paths
+            st.session_state["pipeline_rise_txt_meta"] = rise_txt_meta
+            st.session_state["pipeline_rise_report_df"] = rise_report_df
+            st.session_state["pipeline_rise_bundle_zip"] = rise_bundle_zip_path
+            st.session_state["pipeline_rise_unified_excel"] = rise_unified_excel_path
+
             st.session_state["pipeline_pdf_results"] = resultados_pdf
             st.session_state["pipeline_pdf_errors"] = errores_pdf
             st.session_state["extraccion_resultados"] = resultados_pdf
             st.session_state["extraccion_errores"] = errores_pdf
             st.session_state["extraccion_zip_bytes"] = None
             st.session_state["pipeline_pdf_done"] = True
-            st.session_state["pipeline_word_inputs_count"] = len(combined_docx_paths) + len(h5p_txt_input_paths)
+            st.session_state["pipeline_word_inputs_count"] = (
+                len(combined_docx_paths)
+                + len(h5p_txt_input_paths)
+                + len(rise_txt_input_paths)
+            )
             st.session_state["pipeline_ppt_inputs_count"] = len(pptx_input_paths)
 
             # Limpiamos textos de progreso y dejamos solo el chip
@@ -5450,8 +5579,8 @@ def page_report_broken_unificado():
     # 3. Report Word & PPT Link (Word / PPT → Links) – usando rutas
     # ======================================================
     render_hero(
-        "Report Word, PPT & H5P Link (Excel)",
-        "Genera un Excel con todos los links detectados en documentos Word, PPT y TXT generados desde H5P usando archivos en disco.",
+        "Report Word, PPT, H5P & XLF-Rise (Excel)",
+        "Genera un Excel con todos los links detectados en documentos Word, PPT y TXT generados desde H5P/XLF-Rise usando archivos en disco.",
         "📊",
     )
 
@@ -5464,13 +5593,16 @@ def page_report_broken_unificado():
     h5p_txt_paths = st.session_state.get("pipeline_h5p_txt_paths") or []
     h5p_txt_meta = st.session_state.get("pipeline_h5p_txt_meta") or {}
 
-    total_docs_inputs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths)
+    rise_txt_paths = st.session_state.get("pipeline_rise_txt_paths") or []
+    rise_txt_meta = st.session_state.get("pipeline_rise_txt_meta") or {}
+
+    total_docs_inputs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths) + len(rise_txt_paths)
 
     step_word1 = st.empty()
     step_word1.markdown(
         render_step_header_html(
             "6",
-            "Agregar documentos Word, PPT y H5P TXT (directos o desde ZIP)",
+            "Agregar documentos Word, PPT, H5P TXT y XLF TXT (directos o desde ZIP)",
             "ok" if total_docs_inputs > 0 else "warn",
         ),
         unsafe_allow_html=True,
@@ -5479,7 +5611,8 @@ def page_report_broken_unificado():
     if total_docs_inputs == 0:
         st.caption(
             "Los documentos Word se generan automáticamente a partir de los PDFs del paso anterior; "
-            "los Word/PPT que cargues o descargues también se incorporan aquí. Los ZIP con H5P generan TXT que también se analizan en esta fase."
+            "los Word/PPT que cargues o descargues también se incorporan aquí. "
+            "Los ZIP con H5P y los ZIP con XLF/XLIFF/XML generan TXT que también se analizan en esta fase."
         )
         ui_card_close()
     else:
@@ -5529,8 +5662,22 @@ def page_report_broken_unificado():
                     )
                 st.dataframe(pd.DataFrame(rows_h5p), use_container_width=True, height=260)
 
+        if rise_txt_paths:
+            with st.expander("Archivos TXT generados desde XLF / Rise a analizar", expanded=False):
+                rows_rise = []
+                for p in rise_txt_paths:
+                    meta_r = rise_txt_meta.get(p, {})
+                    rows_rise.append(
+                        {
+                            "Nombre": Path(p).name,
+                            "curso_nombre": meta_r.get("name", ""),
+                            "archivo_xliff": meta_r.get("Archivo", ""),
+                            "url": meta_r.get("link_class", ""),
+                        }
+                    )
+                st.dataframe(pd.DataFrame(rows_rise), use_container_width=True, height=260)
         # Procesar Word, PPT & H5P (Paso 7)
-        render_simple_step_header("7", "Procesar todos los documentos Word, PPT y H5P")
+        render_simple_step_header("7", "Procesar todos los documentos Word, PPT, H5P y XLF-Rise")
 
         progress_bar_word = st.empty()
         status_text_word = st.empty()
@@ -5551,7 +5698,8 @@ def page_report_broken_unificado():
                 total_word = len(docx_paths)
                 total_ppt = len(pptx_paths)
                 total_h5p = len(h5p_txt_paths)
-                total_docs = total_word + total_ppt + total_h5p
+                total_rise = len(rise_txt_paths)
+                total_docs = total_word + total_ppt + total_h5p + total_rise
                 processed = 0
 
                 # Word (DOCX)
@@ -5656,6 +5804,38 @@ def page_report_broken_unificado():
                                     {"Archivo": str(path_obj), "Error": str(e)}
                                 )
 
+                # Rise TXT
+                if rise_txt_paths:
+                    with st.spinner("Buscando enlaces dentro de los TXT generados desde XLF / Rise."):
+                        for p in rise_txt_paths:
+                            processed += 1
+                            path_obj = Path(p)
+                            meta_info = rise_txt_meta.get(p, {})
+                            display_name = meta_info.get("display_name", path_obj.name)
+
+                            status_text_word.markdown(
+                                f"Analizando XLF TXT **{processed}/{total_docs}** · `{display_name}`"
+                            )
+                            render_progress_bar_ui_task(
+                                progress_bar_word,
+                                processed / max(1, total_docs),
+                            )
+
+                            try:
+                                rows = run_rise_txt_link_report_streamlit(
+                                    [str(path_obj)],
+                                    txt_meta={str(path_obj): meta_info},
+                                    progress_bar=progress_bar_word,
+                                    status_text=status_text_word,
+                                    url_extractor=_extract_urls_from_text,
+                                )[0].to_dict("records")
+                                all_rows.extend(rows)
+                            except Exception as e:
+                                logger.error(f"Error procesando Rise TXT {path_obj}: {e}")
+                                errores.append(
+                                    {"Archivo": str(path_obj), "Error": str(e)}
+                                )
+
                 if all_rows:
                     df_links = pd.DataFrame(all_rows)
                     df_links = df_links.sort_values(
@@ -5682,7 +5862,7 @@ def page_report_broken_unificado():
                 progress_bar_word.empty()
                 status_text_word.empty()
 
-                total_docs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths)
+                total_docs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths) + len(rise_txt_paths)
                 total_links = len(df_links)
                 docs_con_links = (
                     df_links["Nombre del Archivo"].nunique()
@@ -5709,7 +5889,7 @@ def page_report_broken_unificado():
         else:
             df_links = st.session_state.get("pipeline_df_links")
             if df_links is not None:
-                total_docs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths)
+                total_docs = len(docx_paths) + len(pptx_paths) + len(h5p_txt_paths) + len(rise_txt_paths)
                 total_links = len(df_links)
                 docs_con_links = (
                     df_links["Nombre del Archivo"].nunique()
@@ -5732,7 +5912,7 @@ def page_report_broken_unificado():
 
         # 🔹 Mostrar chip verde cuando el análisis ya terminó
         if st.session_state.get("pipeline_word_done", False):
-            render_success_chip("Análisis de documentos Word, PPT y H5P completado")
+            render_success_chip("Análisis de documentos Word, PPT, H5P y XLF completado")
 
         ui_card_close()
 
@@ -5755,7 +5935,7 @@ def page_report_broken_unificado():
     step_excel1.markdown(
         render_step_header_html(
             "8",
-            "Procesar Reporte Link (desde documentos Word, PPT y H5P)",
+            "Procesar Reporte Link (desde documentos Word, PPT, H5P y XLF-Rise)",
             "ok" if has_links else "warn",
         ),
         unsafe_allow_html=True,
@@ -6288,6 +6468,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
