@@ -6452,7 +6452,8 @@ def main():
                 - Se recomienda en el proceso "1" descargar de forma masiva entre **500 - 700** registros como máximo.  
                 - Para más de **700** registros, lo recomendable es:  
                     Ejecutar el app en local o dividir el Excel de Url en varios archivos (por ejemplo bloques de 500 o 700 registros) y procesarlos por partes.  
-                - Esto para evitar que el contenedor de **Streamlit Cloud** se quede sin memoria (~1 GB de RAM) 
+                - Esto para evitar que el contenedor de **Streamlit Cloud** se quede sin memoria (~1 GB de RAM)
+                - Los archivos **.H5P** mayores a 200 MB deben analizarse de forma independiente para que el app funcione correctamente. 
                 """
             )
 
@@ -6468,6 +6469,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
