@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+import shutil
+import tempfile
 import html
 import io
 import json
@@ -10,7 +11,6 @@ from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
-
 import pandas as pd
 
 try:
@@ -45,7 +45,6 @@ NOISE_PREFIXES = (
 )
 
 EXCEL_EXTENSIONS = (".xlsx", ".xlsm", ".xltx", ".xltm")
-
 
 class HTMLATexto(HTMLParser):
     def __init__(self) -> None:
@@ -270,6 +269,32 @@ def extraer_texto_h5p_desde_bytes(data: bytes) -> Tuple[str, int]:
         texto_final = "\n\n".join(recolector.bloques).strip()
         return texto_final, len(recolector.bloques)
 
+def extraer_texto_h5p_desde_archivo(h5p_path: str) -> Tuple[str, int]:
+    with zipfile.ZipFile(h5p_path, "r") as zip_ref:
+        recolector = RecolectorTexto()
+        titulo_principal = obtener_titulo_principal(zip_ref)
+        if titulo_principal:
+            recolector.agregar(titulo_principal)
+
+        candidatos = iterar_archivos_contenido(zip_ref.namelist())
+        if not candidatos:
+            raise ValueError("No se encontraron archivos de contenido dentro del paquete H5P.")
+
+        for nombre in candidatos:
+            contenido = decodificar_bytes(zip_ref.read(nombre))
+            if nombre.lower().endswith(".json"):
+                try:
+                    data_obj = json.loads(contenido)
+                    recolector.recorrer(data_obj)
+                except json.JSONDecodeError:
+                    texto = html_a_texto(contenido) if ("<" in contenido and ">" in contenido) else limpiar_texto_plano(contenido)
+                    recolector.agregar(texto)
+            else:
+                texto = html_a_texto(contenido) if ("<" in contenido and ">" in contenido) else limpiar_texto_plano(contenido)
+                recolector.agregar(texto)
+
+        texto_final = "\n\n".join(recolector.bloques).strip()
+        return texto_final, len(recolector.bloques)
 
 def _valor_celda_limpio(valor: Any) -> Any:
     if isinstance(valor, str):
@@ -349,6 +374,34 @@ def leer_reporte_excel_desde_bytes(data: bytes, nombre_origen: str = "") -> Tupl
     wb.close()
     return mejor_headers, mejor_rows, mejor_hoja
 
+
+def leer_reporte_excel_desde_archivo(ruta_excel: str, nombre_origen: str = "") -> Tuple[List[str], List[List[Any]], str]:
+    if load_workbook is None:
+        raise RuntimeError("openpyxl no está disponible para leer reportes H5P.")
+    try:
+        wb = load_workbook(filename=ruta_excel, read_only=True, data_only=True)
+    except Exception as exc:
+        raise ValueError(f"No se pudo leer el Excel '{nombre_origen or ruta_excel}': {exc}") from exc
+
+    mejor_headers: List[str] = []
+    mejor_rows: List[List[Any]] = []
+    mejor_hoja = ""
+
+    hojas = []
+    if wb.sheetnames:
+        if wb.active.title in wb.sheetnames:
+            hojas.append(wb[wb.active.title])
+        for nombre in wb.sheetnames:
+            if nombre != wb.active.title:
+                hojas.append(wb[nombre])
+
+    for ws in hojas:
+        headers, rows = _extraer_tabla_desde_worksheet(ws)
+        if (len(rows), len(headers)) > (len(mejor_rows), len(mejor_headers)):
+            mejor_headers, mejor_rows, mejor_hoja = headers, rows, ws.title
+
+    wb.close()
+    return mejor_headers, mejor_rows, mejor_hoja
 
 def _listar_h5p_en_zip(nombres: Iterable[str]) -> List[str]:
     archivos = [n for n in nombres if not n.endswith("/") and n.lower().endswith(".h5p")]
@@ -504,9 +557,10 @@ def _bundle_outputs(txt_paths: Sequence[str], excel_path: Path, out_zip: Path) -
     return out_zip
 
 def process_h5p_zip_uploads(
-    zip_uploads: Sequence[Tuple[str, bytes]],
+    zip_uploads: Sequence[Tuple[str, str]],
     work_dir: str,
 ) -> Dict[str, Any]:
+    
     work_path = Path(work_dir)
     txt_dir = work_path / "h5p_txt"
     txt_dir.mkdir(parents=True, exist_ok=True)
@@ -516,18 +570,32 @@ def process_h5p_zip_uploads(
     extracted_items: List[Dict[str, Any]] = []
     h5p_count = 0
     report_count = 0
+    temp_extract_dir = work_path / "_tmp_h5p_extract"
+    temp_extract_dir.mkdir(parents=True, exist_ok=True)
 
-    for zip_name, zip_bytes in zip_uploads:
+    for zip_name, zip_path in zip_uploads:
         try:
-            with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            with zipfile.ZipFile(zip_path, "r") as zf:
                 names = zf.namelist()
                 h5p_items = _listar_h5p_en_zip(names)
                 report_items = _listar_reportes_excel_en_zip(names)
+
                 if not h5p_items:
                     warnings.append(f"No se encontraron H5P en {zip_name}")
+
                 for report_item in report_items:
+                    report_tmp = unique_path(
+                        temp_extract_dir,
+                        sanitize_filename(Path(report_item).name),
+                    )
                     try:
-                        headers, rows, _ = leer_reporte_excel_desde_bytes(zf.read(report_item), f"{zip_name}::{report_item}")
+                        with zf.open(report_item, "r") as src, open(report_tmp, "wb") as dst:
+                            shutil.copyfileobj(src, dst, length=1024 * 1024)
+
+                        headers, rows, _ = leer_reporte_excel_desde_archivo(
+                            str(report_tmp),
+                            f"{zip_name}::{report_item}",
+                        )
                         if headers:
                             df = pd.DataFrame(rows, columns=headers)
                             df["__zip_name"] = zip_name
@@ -536,17 +604,32 @@ def process_h5p_zip_uploads(
                             report_count += 1
                     except Exception as exc:
                         warnings.append(f"Error leyendo reporte {Path(report_item).name} en {zip_name}: {exc}")
+                    finally:
+                        try:
+                            if report_tmp.exists():
+                                report_tmp.unlink()
+                        except Exception:
+                            pass
+
                 for h5p_item in h5p_items:
                     h5p_count += 1
+                    h5p_tmp = unique_path(
+                        temp_extract_dir,
+                        sanitize_filename(Path(h5p_item).name),
+                    )
                     try:
-                        h5p_bytes = zf.read(h5p_item)
-                        texto, bloques = extraer_texto_h5p_desde_bytes(h5p_bytes)
+                        with zf.open(h5p_item, "r") as src, open(h5p_tmp, "wb") as dst:
+                            shutil.copyfileobj(src, dst, length=1024 * 1024)
+
+                        texto, bloques = extraer_texto_h5p_desde_archivo(str(h5p_tmp))
                         if not texto.strip():
                             warnings.append(f"Sin texto útil en {Path(h5p_item).name} ({zip_name})")
                             continue
+
                         txt_name = sanitize_filename(Path(h5p_item).stem + ".txt")
                         txt_path = unique_path(txt_dir, txt_name)
                         txt_path.write_text(texto + "\n", encoding="utf-8")
+
                         extracted_items.append(
                             {
                                 "txt_path": str(txt_path),
@@ -558,11 +641,18 @@ def process_h5p_zip_uploads(
                         )
                     except Exception as exc:
                         warnings.append(f"Error procesando H5P {Path(h5p_item).name} en {zip_name}: {exc}")
+                    finally:
+                        try:
+                            if h5p_tmp.exists():
+                                h5p_tmp.unlink()
+                        except Exception:
+                            pass
+
         except zipfile.BadZipFile:
             warnings.append(f"ZIP inválido o corrupto: {zip_name}")
         except Exception as exc:
             warnings.append(f"Error procesando ZIP {zip_name}: {exc}")
-
+            
     report_df = _build_report_dataframe(report_frames)
     by_local, by_content = _prepare_lookup(report_df)
 
@@ -748,4 +838,5 @@ def run_h5p_txt_link_report_streamlit(
             ]
         )
     return df, errors
+
 
