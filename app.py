@@ -2615,7 +2615,7 @@ def _extract_links_from_txt_fallback(
     return [
         {
             "Nombre del Archivo": file_name,
-            "Página/Diapositiva": "1",
+            "Página/Diapositiva": "",
             "Links": url,
             "Archivo": archivo_value,
             "name": name_value,
