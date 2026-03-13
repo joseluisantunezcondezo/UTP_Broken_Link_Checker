@@ -25,7 +25,6 @@ try:
     import fitz  # PyMuPDF
 except ImportError:  # pragma: no cover
     fitz = None  # type: ignore
-
 try:
     from docx import Document
 except ImportError:  # pragma: no cover
@@ -50,15 +49,57 @@ import streamlit as st
 import base64
 import streamlit.components.v1 as components
 
-from brokenCheck_h5p_helper import (
-    process_h5p_zip_uploads,
-    run_h5p_txt_link_report_streamlit,
-)
+try:
+    from brokenCheck_h5p_helper import (
+        process_h5p_zip_uploads,
+        run_h5p_txt_link_report_streamlit,
+    )
+except ImportError:
+    try:
+        from h5p_rise import (
+            process_h5p_zip_uploads,
+            run_h5p_txt_link_report_streamlit,
+        )
+    except ImportError:
+        def process_h5p_zip_uploads(*args, **kwargs):
+            logger.warning("No se encontró helper H5P; se usará fallback vacío.")
+            return {
+                "txt_paths": [],
+                "txt_meta": {},
+                "report_df": pd.DataFrame(),
+                "bundle_zip_path": "",
+                "unified_excel_path": "",
+                "warnings": ["No se encontró el helper de H5P."],
+            }
 
-from brokenCheck_rise_helper import (
-    process_rise_zip_uploads,
-    run_rise_txt_link_report_streamlit,
-)
+        def run_h5p_txt_link_report_streamlit(*args, **kwargs):
+            return pd.DataFrame(), []
+
+try:
+    from brokenCheck_rise_helper import (
+        process_rise_zip_uploads,
+        run_rise_txt_link_report_streamlit,
+    )
+except ImportError:
+    try:
+        from h5p_rise import (
+            process_rise_zip_uploads,
+            run_rise_txt_link_report_streamlit,
+        )
+    except ImportError:
+        def process_rise_zip_uploads(*args, **kwargs):
+            logger.warning("No se encontró helper XLF/Rise; se usará fallback vacío.")
+            return {
+                "txt_paths": [],
+                "txt_meta": {},
+                "report_df": pd.DataFrame(),
+                "bundle_zip_path": "",
+                "unified_excel_path": "",
+                "warnings": ["No se encontró el helper de XLF / Rise."],
+            }
+
+        def run_rise_txt_link_report_streamlit(*args, **kwargs):
+            return pd.DataFrame(), []
 
 try:
     import httpx
@@ -68,7 +109,6 @@ except ImportError:
 # ======================================================
 # LOGGING
 # ======================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -131,7 +171,6 @@ def is_streamlit_cloud() -> bool:
         return val
 
     return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
-
 
 IS_STREAMLIT_CLOUD = is_streamlit_cloud()
 
@@ -306,7 +345,6 @@ def _is_always_active_url(url: str) -> bool:
         if u.startswith(prefix.lower()):
             return True
     return False
-
 
 def _apply_url_whitelist(base: Dict[str, Any], url: str) -> Dict[str, Any]:
     """
@@ -1833,6 +1871,7 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
 
     Además:
     - Pinta la columna Status (ACTIVO=verde, ROTO=rojo).
+    - Deja la columna Link como hipervínculo clicable cuando el valor es una URL válida.
     - Deja link_class y source_url como hipervínculos clicables cuando
       el origen es el Excel de URLs (hay al menos un link_class no vacío).
     """
@@ -1896,14 +1935,42 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
         ws = writer.sheets.get("Status")
         if ws is not None:
             status_col_idx = None
+            link_col_idx = None
             link_class_col_idx = None
             source_url_col_idx = None
+
+            def _normalize_excel_hyperlink_target(raw_value: Any) -> str:
+                raw_text = str(raw_value or "").strip()
+                if not raw_text:
+                    return ""
+
+                normalized, _ = _normalize_one_url(
+                    raw_text,
+                    default_scheme="https",
+                    allow_mailto=False,
+                    allow_tel=False,
+                    allow_anchors_only=False,
+                )
+                if not normalized:
+                    return ""
+
+                try:
+                    parsed = urlparse(normalized)
+                except Exception:
+                    return ""
+
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    return ""
+
+                return normalized
 
             # Localizar índices de columnas por encabezado
             for cell in ws[1]:
                 header = str(cell.value).strip().lower() if cell.value is not None else ""
                 if header == "status":
                     status_col_idx = cell.column
+                elif header == "link":
+                    link_col_idx = cell.column
                 elif header == "link_class":
                     link_class_col_idx = cell.column
                 elif header == "source_url":
@@ -1930,28 +1997,38 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
                     elif value == "ROTO":
                         c_status.fill = red_fill
 
-            # ---- Hipervínculos en link_class y source_url ----
-            # Solo cuando viene del Excel de URLs
-            if es_excel_urls:
-                for row_idx in range(2, ws.max_row + 1):
-                    # link_class → hipervínculo azul subrayado
+            # ---- Hipervínculos en Link / link_class / source_url ----
+            for row_idx in range(2, ws.max_row + 1):
+                # Link → hipervínculo azul subrayado si el valor es una URL válida
+                if link_col_idx is not None:
+                    c_link = ws.cell(row=row_idx, column=link_col_idx)
+                    target_link = _normalize_excel_hyperlink_target(c_link.value)
+                    if target_link:
+                        c_link.hyperlink = target_link
+                        try:
+                            c_link.style = "Hyperlink"
+                        except Exception:
+                            pass
+
+                # link_class y source_url se mantienen clicables sólo cuando
+                # realmente provienen del Excel de URLs.
+                if es_excel_urls:
                     if link_class_col_idx is not None:
                         c_lc = ws.cell(row=row_idx, column=link_class_col_idx)
-                        val_lc = str(c_lc.value).strip() if c_lc.value is not None else ""
-                        if val_lc:
-                            c_lc.hyperlink = val_lc
+                        target_lc = _normalize_excel_hyperlink_target(c_lc.value)
+                        if target_lc:
+                            c_lc.hyperlink = target_lc
                             try:
                                 c_lc.style = "Hyperlink"
                             except Exception:
                                 # Si por alguna razón no existe el estilo, lo ignoramos
                                 pass
 
-                    # source_url → hipervínculo azul subrayado
                     if source_url_col_idx is not None:
                         c_src = ws.cell(row=row_idx, column=source_url_col_idx)
-                        val_src = str(c_src.value).strip() if c_src.value is not None else ""
-                        if val_src:
-                            c_src.hyperlink = val_src
+                        target_src = _normalize_excel_hyperlink_target(c_src.value)
+                        if target_src:
+                            c_src.hyperlink = target_src
                             try:
                                 c_src.style = "Hyperlink"
                             except Exception:
@@ -2049,7 +2126,6 @@ def _is_likely_truncated_url(url: str) -> bool:
         return True
 
     return False
-
 
 def _normalize_one_url(
     raw: str,
@@ -2225,7 +2301,6 @@ _TRACKING_QUERY_KEYS = {
     "ref", "ref_src", "source", "si", "igshid", "spm"
 }
 
-
 def _is_probably_truncated_url(url: str) -> bool:
     s = _strip_invisible(str(url or "")).strip()
     if not s:
@@ -2239,7 +2314,6 @@ def _is_probably_truncated_url(url: str) -> bool:
         return True
 
     return False
-
 
 def _extract_youtube_video_id(url: str) -> str:
     try:
@@ -2257,7 +2331,6 @@ def _extract_youtube_video_id(url: str) -> str:
         pass
 
     return ""
-
 
 def _identity_query_items(url: str):
     items = set()
@@ -2404,8 +2477,15 @@ def _choose_better_link_row(row_a: Dict[str, Any], row_b: Dict[str, Any]) -> Dic
 
 def _consolidate_link_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Consolida filas de enlaces provenientes de distintas fuentes (DOCX + PDF directo),
-    conservando la mejor variante cuando detecta que una URL está truncada o incompleta.
+    Consolida filas de enlaces provenientes de distintas fuentes (DOCX + PDF directo,
+    H5P TXT y XLF/Rise TXT), conservando la mejor variante cuando detecta que una URL
+    está truncada o incompleta.
+
+    Importante:
+    - NO descarta filas sin página/diapositiva. Esto permite conservar los enlaces
+      provenientes de TXT H5P y XLF/Rise, cuya lógica original no siempre asigna página.
+    - Cuando la página viene vacía se usa un bucket lógico estable para consolidar sólo
+      dentro del mismo archivo/origen, sin alterar el valor real mostrado en la fila.
     """
     if not rows:
         return []
@@ -2413,14 +2493,24 @@ def _consolidate_link_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
 
     for row in rows:
-        file_name = str(row.get("Nombre del Archivo", "") or "").strip()
+        file_name = str(
+            row.get("Nombre del Archivo")
+            or row.get("Archivo")
+            or row.get("display_name")
+            or ""
+        ).strip()
         page_no = str(row.get("Página/Diapositiva", "") or "").strip()
-        source_norm = _normalize_url_for_join(row.get("source_url", ""))
+        source_norm = _normalize_url_for_join(
+            row.get("source_url")
+            or row.get("link_class")
+            or ""
+        )
 
-        if not file_name or not page_no:
+        if not file_name:
             continue
 
-        bucket_key = (file_name, page_no, source_norm)
+        bucket_page = page_no if page_no else "__SIN_PAGINA__"
+        bucket_key = (file_name, bucket_page, source_norm)
         grouped.setdefault(bucket_key, []).append(dict(row))
 
     consolidated: List[Dict[str, Any]] = []
@@ -2541,7 +2631,11 @@ def _coerce_helper_link_rows(
             continue
 
         file_name = _first_non_empty_value(row, file_keys, default=default_file_name)
-        page_value = _first_non_empty_value(row, page_keys, default="1")
+        page_value = _first_non_empty_value(
+            row,
+            page_keys,
+            default=str(meta_info.get("Página/Diapositiva") or meta_info.get("pagina") or meta_info.get("page") or ""),
+        )
 
         rows.append(
             {
@@ -2768,7 +2862,6 @@ def _classify_v5(
 
     return "ERROR"
 
-
 def _is_binary_candidate(url: str) -> bool:
     try:
         p = urlparse(url)
@@ -2776,7 +2869,6 @@ def _is_binary_candidate(url: str) -> bool:
     except Exception:
         return False
     return any(path.endswith(ext) for ext in BINARY_EXTS)
-
 
 def _compute_retry_delay(retry_after_header: Optional[str], attempt: int) -> float:
     if retry_after_header:
@@ -2786,7 +2878,6 @@ def _compute_retry_delay(retry_after_header: Optional[str], attempt: int) -> flo
             pass
     # backoff exponencial básico + algo de jitter
     return min(30, 1.0 * (2 ** (attempt - 1))) + random.random()
-
 
 def _build_url_timeout_result(url: str, fila_excel: int, timeout_seconds: float) -> Dict[str, Any]:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2804,7 +2895,6 @@ def _build_url_timeout_result(url: str, fila_excel: int, timeout_seconds: float)
         "Score": -100,
         "Fila_Excel": fila_excel,
     }
-
 
 def _compute_url_watchdog_timeout(url: str, timeout_s: float, retries: int) -> float:
     """
@@ -3842,7 +3932,6 @@ class PDFBatchProcessor:
 
         return "\n".join(lines)
 
-
     def _normalize_text(self, text: str) -> str:
         """Normaliza texto para comparaciones (sin tildes, minúsculas, espacios colapsados)."""
         if not text:
@@ -3885,7 +3974,6 @@ def _format_hms(seconds: float) -> str:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
-
 def nombre_archivo_seguro(url: str, carpeta_destino: str, max_ruta: int = 240) -> str:
     """
     Genera un nombre de archivo seguro para Windows:
@@ -3925,13 +4013,11 @@ def nombre_archivo_seguro(url: str, carpeta_destino: str, max_ruta: int = 240) -
 
 UPLOAD_STREAM_CHUNK = 1024 * 1024  # 1 MB
 
-
 def _uploaded_file_size(uploaded) -> int:
     try:
         return int(getattr(uploaded, "size", 0) or 0)
     except Exception:
         return 0
-
 
 def _build_uploaded_files_signature(uploaded_files) -> Tuple[Tuple[str, int], ...]:
     items: List[Tuple[str, int]] = []
@@ -5312,7 +5398,6 @@ def page_home():
             """
         )
 
-
     # Sección: Seguridad
     st.markdown(
         """
@@ -5754,7 +5839,7 @@ def page_report_broken_unificado():
             fname = f.name
             ext = Path(fname).suffix.lower()
 
-            dest_path = manual_dir_path / Path(fname).name
+            dest_path = _ensure_unique_path(manual_dir_path, Path(fname).name)
 
             def _write_if_needed(target: Path, uploaded_obj):
                 try:
@@ -5796,7 +5881,7 @@ def page_report_broken_unificado():
 
             elif ext == ".zip":
                 try:
-                    saved_zip_path = manual_dir_path / Path(fname).name
+                    saved_zip_path = _ensure_unique_path(manual_dir_path, Path(fname).name)
                     _stream_uploaded_file_to_disk(f, saved_zip_path)
 
                     with zipfile.ZipFile(saved_zip_path, "r") as zf:
@@ -5833,7 +5918,7 @@ def page_report_broken_unificado():
                             if inner_ext in (".xlsx", ".xlsm", ".xltx", ".xltm", ".xlf", ".xliff", ".xml") or inner_ext == ".h5p":
                                 continue
 
-                            inner_dest = manual_dir_path / inner_name
+                            inner_dest = _ensure_unique_path(manual_dir_path, inner_name)
                             _extract_zip_member_to_path(zf, info, inner_dest)
 
                             if inner_ext == ".pdf":
