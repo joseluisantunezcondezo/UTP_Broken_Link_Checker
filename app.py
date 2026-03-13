@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
-from urllib.parse import urlparse, urlunparse, quote, parse_qs
+from urllib.parse import urlparse, urlunparse, quote, parse_qs, unquote
 import tempfile
 import zipfile
 import io
@@ -144,7 +144,6 @@ MAX_ZIP_BLOCK_MB = 200   # tamaño máximo aproximado por bloque de ZIP (MB)
 
 # --------- Límite de seguridad Streamlit Cloud (solo afecta a la descarga masiva desde Excel) ----------
 MAX_BULK_URLS_CLOUD = 700
-
 
 def is_streamlit_cloud() -> bool:
     """Detecta si la app está ejecutándose en Streamlit Cloud.
@@ -468,7 +467,6 @@ TRUSTED_DOMAINS = [
     "scopus.com",
     "repositorio.ulima.edu.pe",
     "pixabay.com",
-
 
 ]
 
@@ -1863,6 +1861,34 @@ def on_change_module():
 # DATA / EXPORT
 # ======================================================
 
+def _clear_source_url_for_h5p_rise_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Conserva `link_class` y deja `source_url` vacío únicamente para filas
+    provenientes de H5P / XLF-Rise cuando ambos valores llegan duplicados
+    al reporte final.
+    """
+    if df is None or df.empty:
+        return df
+
+    if "link_class" not in df.columns or "source_url" not in df.columns:
+        return df
+
+    df = df.copy()
+
+    lc = df["link_class"].fillna("").astype(str).str.strip()
+    src = df["source_url"].fillna("").astype(str).str.strip()
+
+    if "Página/Diapositiva" in df.columns:
+        page_series = df["Página/Diapositiva"].fillna("").astype(str).str.strip()
+    else:
+        page_series = pd.Series("", index=df.index, dtype="object")
+
+    mask_h5p_rise = lc.ne("") & src.ne("") & lc.eq(src) & page_series.eq("")
+    if mask_h5p_rise.any():
+        df.loc[mask_h5p_rise, "source_url"] = ""
+
+    return df
+
 def _to_excel_report(df_status: pd.DataFrame) -> bytes:
     """
     Genera el Excel final SOLO con la hoja 'Status', con las columnas:
@@ -1897,6 +1923,14 @@ def _to_excel_report(df_status: pd.DataFrame) -> bytes:
     # Asegurar nombre de columna Archivo
     if "Nombre del Archivo" in df_detalle.columns and "Archivo" not in df_detalle.columns:
         df_detalle = df_detalle.rename(columns={"Nombre del Archivo": "Archivo"})
+
+    # Solo para H5P / XLF-Rise: conservar link_class y dejar source_url vacío
+    # cuando ambos vienen duplicados en el reporte final.
+    df_detalle = _clear_source_url_for_h5p_rise_rows(df_detalle)
+
+    # Salvaguarda final: completar Archivo cuando el origen viene desde Excel de URLs
+    # o desde archivos locales/rutas ya procesadas por el pipeline.
+    df_detalle = _fill_archivo_column(df_detalle)
 
     # Columnas objetivo en el orden requerido
     columnas_objetivo = [
@@ -2048,13 +2082,11 @@ def _to_excel_reporte_links(df_links: pd.DataFrame) -> bytes:
         df_links.to_excel(writer, index=False, sheet_name="Resultados")
     return bio.getvalue()
 
-
 def _read_excel_safe(uploaded_file) -> pd.DataFrame:
     try:
         return pd.read_excel(uploaded_file)
     except Exception as e:
         raise RuntimeError(f"No se pudo leer el Excel: {e}") from e
-
 
 # ======================================================
 # NORMALIZACIÓN DE URLs
@@ -2291,6 +2323,117 @@ def _normalize_url_for_join(value: Any) -> str:
     except Exception:
         # Si algo falla, al menos quitamos espacios y barra final
         return s.rstrip("/")
+
+def _extract_filename_from_source_value(value: Any) -> str:
+    """
+    Obtiene un nombre de archivo estable desde una URL HTTP/HTTPS o una ruta local.
+    """
+    raw = _strip_invisible(str(value or "")).strip()
+    if not raw or raw.lower() in {"nan", "none"}:
+        return ""
+
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        parsed = None
+
+    if parsed and parsed.scheme in ("http", "https"):
+        candidate = Path(unquote(parsed.path or "")).name
+    else:
+        candidate = Path(raw).name
+
+    candidate = _strip_invisible(candidate).strip()
+    if not candidate or candidate.lower() in {"nan", "none"}:
+        return ""
+
+    return candidate
+
+
+def _fill_archivo_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Completa la columna `Archivo` sin alterar la lógica actual del pipeline.
+
+    Prioridad de llenado cuando `Archivo` viene vacío:
+    1) `source_url` si apunta directamente al documento real (HTTP/HTTPS).
+    2) `source_url` si es una ruta / nombre local de documento soportado.
+    3) `Nombre del Archivo` como salvaguarda final.
+
+    Importante:
+    - No pisa valores ya existentes en `Archivo`.
+    - Evita usar `source_url` cuando está duplicado con `link_class`
+      (caso H5P / XLF-Rise ya manejado por la lógica actual).
+    - No usa `name` como fuente de `Archivo`, porque suele contener el título del curso.
+    """
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+
+    if "Archivo" not in df.columns:
+        df["Archivo"] = ""
+    else:
+        df["Archivo"] = df["Archivo"].astype("object")
+
+    archivo_series = df["Archivo"].fillna("").astype(str).str.strip()
+    mask_archivo_empty = archivo_series.eq("") | archivo_series.str.lower().isin(["nan", "none"])
+    if not mask_archivo_empty.any():
+        return df
+
+    source_series = (
+        df["source_url"].fillna("").astype(str).str.strip()
+        if "source_url" in df.columns
+        else pd.Series("", index=df.index, dtype="object")
+    )
+    link_class_series = (
+        df["link_class"].fillna("").astype(str).str.strip()
+        if "link_class" in df.columns
+        else pd.Series("", index=df.index, dtype="object")
+    )
+    display_series = (
+        df["Nombre del Archivo"].fillna("").astype(str).str.strip()
+        if "Nombre del Archivo" in df.columns
+        else pd.Series("", index=df.index, dtype="object")
+    )
+
+    source_filename = source_series.apply(_extract_filename_from_source_value)
+    source_ext = source_filename.str.lower().apply(lambda s: Path(s).suffix if s else "")
+    allowed_source_exts = {
+        ".pdf", ".doc", ".docx", ".ppt", ".pptx",
+        ".h5p", ".xlf", ".xliff", ".xml", ".txt",
+    }
+
+    mask_not_link_class_dup = link_class_series.eq("") | source_series.ne(link_class_series)
+    mask_http_source = (
+        mask_archivo_empty
+        & source_series.str.match(r"^https?://", case=False, na=False)
+        & mask_not_link_class_dup
+        & source_filename.ne("")
+    )
+    if mask_http_source.any():
+        df.loc[mask_http_source, "Archivo"] = source_filename[mask_http_source]
+
+    archivo_series = df["Archivo"].fillna("").astype(str).str.strip()
+    mask_archivo_empty = archivo_series.eq("") | archivo_series.str.lower().isin(["nan", "none"])
+
+    mask_local_doc_source = (
+        mask_archivo_empty
+        & source_series.ne("")
+        & ~source_series.str.match(r"^https?://", case=False, na=False)
+        & mask_not_link_class_dup
+        & source_ext.isin(allowed_source_exts)
+    )
+    if mask_local_doc_source.any():
+        df.loc[mask_local_doc_source, "Archivo"] = source_filename[mask_local_doc_source]
+
+    archivo_series = df["Archivo"].fillna("").astype(str).str.strip()
+    mask_archivo_empty = archivo_series.eq("") | archivo_series.str.lower().isin(["nan", "none"])
+
+    display_filename = display_series.apply(lambda value: _extract_filename_from_source_value(value))
+    mask_display_name = mask_archivo_empty & display_filename.ne("")
+    if mask_display_name.any():
+        df.loc[mask_display_name, "Archivo"] = display_filename[mask_display_name]
+
+    return df
 
 # ======================================================
 # CONSOLIDACIÓN ROBUSTA DE LINKS (DOCX + PDF fallback)
@@ -7240,10 +7383,12 @@ def page_report_broken_unificado():
                 df_out["Tipo_Problema"] = ""
 
             df_out = _standardize_status_column(df_out)
+            df_out = _fill_archivo_column(df_out)
 
             df_export = df_out.copy()
             if "Nombre del Archivo" in df_export.columns and "Archivo" not in df_export.columns:
                 df_export = df_export.rename(columns={"Nombre del Archivo": "Archivo"})
+            df_export = _fill_archivo_column(df_export)
 
             st.session_state.status_result_df = df_out
             st.session_state.status_export_df = df_export
