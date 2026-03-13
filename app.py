@@ -94,6 +94,7 @@ DEFAULT_TIMEOUT_S = 15.0
 DEFAULT_CONCURRENCY_GLOBAL = 30
 DEFAULT_CONCURRENCY_PER_HOST = 6
 DEFAULT_RETRIES = 3
+DEFAULT_HARD_TIMEOUT_PER_URL_S = 35.0
 
 DEFAULT_MAX_BYTES = 200_000
 DEFAULT_RANGE_BYTES = 131_072
@@ -1026,11 +1027,9 @@ def _is_trusted_domain(url: str) -> bool:
     except Exception:
         return False
 
-
 def _get_random_user_agent() -> str:
     """Devuelve un User-Agent aleatorio de la lista."""
     return random.choice(USER_AGENTS)
-
 
 def _build_headers_for_domain(url: str) -> Dict[str, str]:
     """
@@ -1668,6 +1667,7 @@ def init_session_state():
     st.session_state.setdefault("status_export_df", None)
     st.session_state.setdefault("pipeline_manual_upload_signature", None)
     st.session_state.setdefault("pipeline_manual_h5p_zip_paths", [])
+    st.session_state.setdefault("pipeline_status_signature", None)
 
     # 🔹 NUEVO: info del Excel de status para auto-descarga
     st.session_state.setdefault("status_excel_bytes", None)
@@ -1751,6 +1751,7 @@ def reset_report_broken_pipeline():
         "descarga_fallidos_csv",
         "pipeline_manual_upload_signature",
         "pipeline_manual_h5p_zip_paths",
+        "pipeline_status_signature",
 
         # 🔹 2) PDF → Word (pasos 4–5)
         "pipeline_pdf_signature",
@@ -1983,12 +1984,71 @@ def _read_excel_safe(uploaded_file) -> pd.DataFrame:
 # ======================================================
 
 def _strip_invisible(s: str) -> str:
-    return s.replace("\u200b", "").replace("\ufeff", "").strip()
-
+    return (
+        s.replace("\u200b", "")
+         .replace("\ufeff", "")
+         .replace("\ufffe", "")
+         .replace("\uffff", "")
+         .strip()
+    )
 
 def _looks_like_url(s: str) -> bool:
     s = s.lower().strip()
     return s.startswith(("http://", "https://")) or "." in s
+
+def _split_repeated_scheme_url(raw_url: str) -> str:
+    """
+    Corrige casos de extracción donde una URL queda concatenada consigo misma
+    o con otra URL completa dentro del path, por ejemplo:
+    https://dominio/a/b/https://dominio/a/b/
+    """
+    s = _strip_invisible(str(raw_url or ""))
+    low = s.lower()
+
+    if not low.startswith(("http://", "https://")):
+        return s
+
+    first_scheme_len = 8 if low.startswith("https://") else 7
+    repeated_positions = [
+        pos for pos in (low.find("https://", first_scheme_len), low.find("http://", first_scheme_len))
+        if pos != -1
+    ]
+    if not repeated_positions:
+        return s
+
+    first_repeat = min(repeated_positions)
+    candidate = s[:first_repeat].rstrip()
+
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return candidate.rstrip(".,;:!?)[]{}\"'")
+    except Exception:
+        pass
+
+    return s
+
+
+def _is_likely_truncated_url(url: str) -> bool:
+    """
+    Marca como truncadas las URLs extraídas incompletas para que no pasen a la fase HTTP.
+    """
+    s = _strip_invisible(str(url or ""))
+    if not s:
+        return False
+
+    low = s.lower()
+
+    if low.endswith(("%", "&", "?", "=")):
+        return True
+
+    if any(ch in s for ch in ("�", "￾")):
+        return True
+
+    if low.count("http://") + low.count("https://") > 1:
+        return True
+
+    return False
 
 
 def _normalize_one_url(
@@ -2007,6 +2067,7 @@ def _normalize_one_url(
         return None, "Vacío"
 
     s = s.replace("\n", " ").replace("\r", " ").strip()
+    s = _split_repeated_scheme_url(s)
 
     if s.startswith("#"):
         return (s, "") if allow_anchors_only else (None, "Anchor (#)")
@@ -2022,6 +2083,9 @@ def _normalize_one_url(
             s = f"{default_scheme}://{s}"
         else:
             return None, "No parece URL"
+
+    if _is_likely_truncated_url(s):
+        return None, "URL truncada o incompleta"
 
     struct_valid, struct_reason = validate_url_structure(s)
     if not struct_valid:
@@ -2070,6 +2134,9 @@ def _normalize_one_url(
     query = quote(p.query, safe="=&%:@-._~!$&'()*+,;/?")
 
     norm = urlunparse((scheme, netloc_clean, path, p.params, query, ""))
+
+    if _is_likely_truncated_url(norm):
+        return None, "URL truncada o incompleta"
 
     yt_valid, yt_reason = validate_youtube_url(norm)
     if not yt_valid:
@@ -2148,6 +2215,415 @@ def _normalize_url_for_join(value: Any) -> str:
     except Exception:
         # Si algo falla, al menos quitamos espacios y barra final
         return s.rstrip("/")
+
+# ======================================================
+# CONSOLIDACIÓN ROBUSTA DE LINKS (DOCX + PDF fallback)
+# ======================================================
+
+_TRACKING_QUERY_KEYS = {
+    "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
+    "ref", "ref_src", "source", "si", "igshid", "spm"
+}
+
+
+def _is_probably_truncated_url(url: str) -> bool:
+    s = _strip_invisible(str(url or "")).strip()
+    if not s:
+        return False
+
+    if any(ch in s for ch in ("�", "￾", "�")):
+        return True
+    if s.endswith(("&", "?", "=", "%")):
+        return True
+    if len(s) >= 2 and s[-2] == "%" and s[-1].isalnum():
+        return True
+
+    return False
+
+
+def _extract_youtube_video_id(url: str) -> str:
+    try:
+        p = urlparse(str(url or "").strip())
+        host = (p.netloc or "").lower()
+        path = (p.path or "").strip("/")
+
+        if "youtube.com" in host:
+            qs = parse_qs(p.query or "", keep_blank_values=True)
+            return (qs.get("v") or [""])[0].strip()
+
+        if "youtu.be" in host:
+            return (path.split("/") or [""])[0].strip()
+    except Exception:
+        pass
+
+    return ""
+
+
+def _identity_query_items(url: str):
+    items = set()
+
+    try:
+        p = urlparse(str(url or "").strip())
+        qs = parse_qs(p.query or "", keep_blank_values=False)
+
+        for k, vals in qs.items():
+            lk = str(k or "").strip().lower()
+            if not lk:
+                continue
+            if lk.startswith("utm_") or lk in _TRACKING_QUERY_KEYS:
+                continue
+
+            for v in vals:
+                sv = str(v or "").strip()
+                if sv:
+                    items.add((lk, sv))
+    except Exception:
+        pass
+
+    return items
+
+
+def _same_resource_candidate(url_a: str, url_b: str) -> bool:
+    raw_a = _strip_invisible(str(url_a or "")).strip()
+    raw_b = _strip_invisible(str(url_b or "")).strip()
+    if not raw_a or not raw_b:
+        return False
+
+    norm_a, _ = _normalize_one_url(raw_a, default_scheme="https")
+    norm_b, _ = _normalize_one_url(raw_b, default_scheme="https")
+
+    a = norm_a or raw_a
+    b = norm_b or raw_b
+
+    try:
+        pa = urlparse(a)
+        pb = urlparse(b)
+    except Exception:
+        return False
+
+    host_a = (pa.netloc or "").lower()
+    host_b = (pb.netloc or "").lower()
+    if not host_a or not host_b or host_a != host_b:
+        return False
+
+    yid_a = _extract_youtube_video_id(a)
+    yid_b = _extract_youtube_video_id(b)
+    if yid_a and yid_b:
+        return yid_a == yid_b
+
+    path_a = (pa.path or "").rstrip("/")
+    path_b = (pb.path or "").rstrip("/")
+    if path_a != path_b:
+        return False
+
+    shorter, longer = sorted([a, b], key=len)
+
+    if longer.startswith(shorter):
+        if shorter.endswith(("&", "?", "=", "#")):
+            return True
+        if _is_probably_truncated_url(shorter):
+            return True
+
+        tail = longer[len(shorter):]
+        if tail.startswith(("&", "#")):
+            return True
+
+    id_a = _identity_query_items(a)
+    id_b = _identity_query_items(b)
+    if id_a and id_b:
+        if id_a.issubset(id_b) or id_b.issubset(id_a):
+            if _is_probably_truncated_url(a) or _is_probably_truncated_url(b):
+                return True
+
+    return False
+
+
+def _url_quality_score(url: str) -> int:
+    raw = _strip_invisible(str(url or "")).strip()
+    if not raw:
+        return -10000
+
+    score = 0
+
+    norm, _ = _normalize_one_url(raw, default_scheme="https")
+    final_url = norm or raw
+
+    if norm:
+        score += 200
+
+    score += min(len(final_url), 300)
+
+    if _is_probably_truncated_url(final_url):
+        score -= 180
+    else:
+        score += 60
+
+    try:
+        p = urlparse(final_url)
+        if p.scheme in ("http", "https"):
+            score += 30
+        if p.netloc:
+            score += 30
+        if (p.path or "").strip("/"):
+            score += 20
+
+        qs = parse_qs(p.query or "", keep_blank_values=False)
+        useful_pairs = 0
+        for k, vals in qs.items():
+            lk = str(k or "").strip().lower()
+            if lk.startswith("utm_") or lk in _TRACKING_QUERY_KEYS:
+                continue
+            useful_pairs += sum(1 for v in vals if str(v or "").strip())
+
+        score += min(useful_pairs * 12, 72)
+    except Exception:
+        pass
+
+    if _extract_youtube_video_id(final_url):
+        score += 50
+
+    return score
+
+
+def _choose_better_link_row(row_a: Dict[str, Any], row_b: Dict[str, Any]) -> Dict[str, Any]:
+    url_a = str(row_a.get("Links", "") or "")
+    url_b = str(row_b.get("Links", "") or "")
+
+    score_a = _url_quality_score(url_a)
+    score_b = _url_quality_score(url_b)
+
+    if score_b > score_a:
+        return row_b
+    if score_a > score_b:
+        return row_a
+
+    if len(url_b) > len(url_a):
+        return row_b
+    return row_a
+
+
+def _consolidate_link_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Consolida filas de enlaces provenientes de distintas fuentes (DOCX + PDF directo),
+    conservando la mejor variante cuando detecta que una URL está truncada o incompleta.
+    """
+    if not rows:
+        return []
+
+    grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+
+    for row in rows:
+        file_name = str(row.get("Nombre del Archivo", "") or "").strip()
+        page_no = str(row.get("Página/Diapositiva", "") or "").strip()
+        source_norm = _normalize_url_for_join(row.get("source_url", ""))
+
+        if not file_name or not page_no:
+            continue
+
+        bucket_key = (file_name, page_no, source_norm)
+        grouped.setdefault(bucket_key, []).append(dict(row))
+
+    consolidated: List[Dict[str, Any]] = []
+
+    for bucket in grouped.values():
+        kept: List[Dict[str, Any]] = []
+
+        for row in bucket:
+            row_url = str(row.get("Links", "") or "").strip()
+            if not row_url:
+                continue
+
+            merged = False
+
+            for i, current in enumerate(kept):
+                current_url = str(current.get("Links", "") or "").strip()
+
+                if _normalize_url_for_join(current_url) == _normalize_url_for_join(row_url):
+                    kept[i] = _choose_better_link_row(current, row)
+                    merged = True
+                    break
+
+                if _same_resource_candidate(current_url, row_url):
+                    kept[i] = _choose_better_link_row(current, row)
+                    merged = True
+                    break
+
+            if not merged:
+                kept.append(row)
+
+        consolidated.extend(kept)
+
+    return consolidated
+
+# ======================================================
+# NORMALIZACIÓN ROBUSTA DE FILAS DE LINKS (HELPERS TXT H5P / XLF)
+# ======================================================
+
+def _first_non_empty_value(mapping: Any, keys: List[str], default: str = "") -> str:
+    if mapping is None:
+        return default
+
+    for key in keys:
+        try:
+            value = mapping.get(key, "") if hasattr(mapping, "get") else ""
+        except Exception:
+            value = ""
+
+        if value is None:
+            continue
+
+        text = str(value).strip()
+        if text and text.lower() != "nan":
+            return text
+
+    return default
+
+
+def _coerce_helper_link_rows(
+    helper_output: Any,
+    *,
+    meta_info: Optional[Dict[str, Any]] = None,
+    display_name: str = "",
+    source_url: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Normaliza la salida de los helpers H5P / XLF-Rise para que siempre devuelva
+    filas con las columnas esperadas por el pipeline principal.
+    """
+    meta_info = meta_info or {}
+
+    df_helper = None
+    if isinstance(helper_output, tuple) and helper_output:
+        first = helper_output[0]
+        if isinstance(first, pd.DataFrame):
+            df_helper = first.copy()
+        elif isinstance(first, list):
+            df_helper = pd.DataFrame(first)
+    elif isinstance(helper_output, pd.DataFrame):
+        df_helper = helper_output.copy()
+    elif isinstance(helper_output, list):
+        df_helper = pd.DataFrame(helper_output)
+
+    if df_helper is None or df_helper.empty:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+
+    link_keys = [
+        "Links", "Link", "URL", "url", "href", "Hyperlink", "Enlace",
+    ]
+    file_keys = [
+        "Nombre del Archivo", "Archivo", "Nombre TXT", "TXT", "txt_name",
+        "filename", "file_name", "Nombre",
+    ]
+    page_keys = [
+        "Página/Diapositiva", "Página", "Diapositiva", "Page", "Slide",
+        "pagina", "slide",
+    ]
+
+    default_file_name = (
+        str(display_name or "").strip()
+        or str(meta_info.get("display_name") or "").strip()
+        or str(meta_info.get("Archivo") or "").strip()
+        or str(meta_info.get("name") or "").strip()
+        or "documento.txt"
+    )
+    default_source_url = (
+        str(source_url or "").strip()
+        or str(meta_info.get("source_url") or "").strip()
+        or str(meta_info.get("link_class") or "").strip()
+        or str(meta_info.get("zip_name") or "").strip()
+    )
+
+    for _, row in df_helper.iterrows():
+        link = _first_non_empty_value(row, link_keys, default="")
+        if not link:
+            continue
+
+        file_name = _first_non_empty_value(row, file_keys, default=default_file_name)
+        page_value = _first_non_empty_value(row, page_keys, default="1")
+
+        rows.append(
+            {
+                "Nombre del Archivo": file_name,
+                "Página/Diapositiva": str(page_value),
+                "Links": link,
+                "Archivo": _first_non_empty_value(
+                    row, ["Archivo", "Nombre del Archivo"], default=str(meta_info.get("Archivo") or file_name)
+                ),
+                "name": _first_non_empty_value(
+                    row, ["name", "Nombre", "title", "titulo"], default=str(meta_info.get("name") or "")
+                ),
+                "link_class": _first_non_empty_value(
+                    row, ["link_class", "url", "URL"], default=str(meta_info.get("link_class") or "")
+                ),
+                "source_url": _first_non_empty_value(
+                    row, ["source_url"], default=default_source_url
+                ),
+            }
+        )
+
+    return rows
+
+
+def _extract_links_from_txt_fallback(
+    txt_path: str,
+    *,
+    display_name: str,
+    meta_info: Optional[Dict[str, Any]] = None,
+    source_url: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Respaldo robusto para H5P / XLF cuando el helper no devuelve filas o cambia
+    el esquema de salida. Extrae las URLs directamente del TXT.
+    """
+    meta_info = meta_info or {}
+
+    if not txt_path or not os.path.exists(txt_path):
+        return []
+
+    try:
+        with open(txt_path, "r", encoding="utf-8", errors="ignore") as fh:
+            raw_text = fh.read()
+    except Exception as exc:
+        logger.warning("No se pudo leer TXT de respaldo %s: %s", txt_path, exc)
+        return []
+
+    urls = _extract_urls_from_text(raw_text)
+    if not urls:
+        return []
+
+    default_source_url = (
+        str(source_url or "").strip()
+        or str(meta_info.get("source_url") or "").strip()
+        or str(meta_info.get("link_class") or "").strip()
+        or str(meta_info.get("zip_name") or "").strip()
+    )
+
+    file_name = (
+        str(display_name or "").strip()
+        or str(meta_info.get("display_name") or "").strip()
+        or str(meta_info.get("Archivo") or "").strip()
+        or str(meta_info.get("name") or "").strip()
+        or Path(txt_path).name
+    )
+
+    archivo_value = str(meta_info.get("Archivo") or file_name)
+    name_value = str(meta_info.get("name") or "")
+    link_class_value = str(meta_info.get("link_class") or "")
+
+    return [
+        {
+            "Nombre del Archivo": file_name,
+            "Página/Diapositiva": "1",
+            "Links": url,
+            "Archivo": archivo_value,
+            "name": name_value,
+            "link_class": link_class_value,
+            "source_url": default_source_url,
+        }
+        for url in urls
+    ]
 
 # ======================================================
 # LINK CHECKER ULTRA ROBUSTO V4
@@ -2312,18 +2788,70 @@ def _compute_retry_delay(retry_after_header: Optional[str], attempt: int) -> flo
     return min(30, 1.0 * (2 ** (attempt - 1))) + random.random()
 
 
+def _build_url_timeout_result(url: str, fila_excel: int, timeout_seconds: float) -> Dict[str, Any]:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "Link": url,
+        "Status": "ERROR",
+        "HTTP_Code": None,
+        "Detalle": f"Tiempo máximo excedido durante la validación ({timeout_seconds:.0f}s)",
+        "Content_Type": "",
+        "Redirected": "No",
+        "Timestamp": now_str,
+        "Final_URL": url,
+        "Redirect_Chain": url,
+        "Soft_404": "No",
+        "Score": -100,
+        "Fila_Excel": fila_excel,
+    }
+
+
+def _compute_url_watchdog_timeout(url: str, timeout_s: float, retries: int) -> float:
+    """
+    Timeout duro calculado dinámicamente por URL para evitar bloqueos prolongados.
+    Se ajusta según el tipo de recurso y el comportamiento esperado del dominio.
+    """
+    base_timeout = max(float(timeout_s or 0), 1.0)
+    retry_count = max(int(retries or 0), 0)
+    total = base_timeout * (retry_count + 1)
+
+    bonus = 10.0
+    config = _get_domain_config(url)
+
+    if _is_binary_candidate(url):
+        bonus += 12.0
+    if bool(config.get("skip_ssl_verify", False)):
+        bonus += 4.0
+    if bool(config.get("skip_head_for_binary", False)):
+        bonus += 4.0
+    if _is_trusted_domain(url):
+        bonus += 3.0
+    if len(str(url or "")) >= 180:
+        bonus += 3.0
+
+    accept_codes = config.get("accept_codes") or []
+    if any(code in accept_codes for code in (403, 429, 503)):
+        bonus += 4.0
+
+    return min(90.0, max(20.0, total + bonus))
+
+
 async def _fetch_limited_text_v5(
     client: "httpx.AsyncClient",
     url: str,
     timeout_s: float,
     max_bytes: int,
     range_bytes: int,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[Optional[int], Dict[str, str], str, bool, str, List[str]]:
+
     """
     GET parcial con cabecera Range. Se limita el contenido a max_bytes.
     Combina los headers del cliente con Range.
     """
     headers = {"Range": f"bytes=0-{range_bytes-1}"}
+    if extra_headers:
+        headers.update(extra_headers)
 
     try:
         async with client.stream(
@@ -2364,7 +2892,6 @@ async def _fetch_limited_text_v5(
     except Exception as e:
         return None, {}, f"{e.__class__.__name__}: {str(e)[:200]}", False, url, [url]
 
-
 async def _check_one_url_robust_v5(
     client: "httpx.AsyncClient",
     url: str,
@@ -2374,7 +2901,9 @@ async def _check_one_url_robust_v5(
     range_bytes: int,
     detect_soft_404: bool,
     retries: int,
+    request_headers: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
+
     """
     Verificación robusta V5:
     - HEAD para binarios (PDF, DOC, etc.).
@@ -2420,6 +2949,7 @@ async def _check_one_url_robust_v5(
                     url,
                     timeout=timeout_s,
                     follow_redirects=True,
+                    headers=request_headers,
                 )
                 final_url = str(r.url)
                 history_urls = [str(resp.url) for resp in r.history]
@@ -2518,6 +3048,7 @@ async def _check_one_url_robust_v5(
             timeout_s=timeout_s,
             max_bytes=max_bytes,
             range_bytes=range_bytes,
+            extra_headers=request_headers,
         )
 
         last_status = status
@@ -2685,8 +3216,10 @@ async def _run_link_check_ultra_v5(
     verify_ssl: bool,
     max_bytes: int,
     range_bytes: int,
+    hard_timeout_per_url_s: float,
     progress_callback,
 ) -> List[Dict[str, Any]]:
+    
     """
     Versión V5 del checker:
     - Concurrencia global y por host.
@@ -2755,24 +3288,49 @@ async def _run_link_check_ultra_v5(
             use_no_ssl = (not verify_ssl) or bool(config.get("skip_ssl_verify", False))
             client = client_nossl if use_no_ssl else client_ssl
 
-            # Headers “tipo navegador” ajustados al dominio
-            # (se actualizan sobre los base; no se limpian para mantener compatibilidad)
-            client.headers.update(_build_headers_for_domain(u))
+            request_headers = _build_headers_for_domain(u)
+            url_watchdog_timeout = _compute_url_watchdog_timeout(u, timeout_s, retries)
 
             async with sem_global:
                 async with host_sem:
                     if u in cache:
                         base = cache[u]
                     else:
-                        base = await _check_one_url_robust_v5(
-                            client,
-                            u,
-                            timeout_s=timeout_s,
-                            max_bytes=max_bytes,
-                            range_bytes=range_bytes,
-                            detect_soft_404=detect_soft_404,
-                            retries=retries,
-                        )
+                        try:
+                            base = await asyncio.wait_for(
+                                _check_one_url_robust_v5(
+                                    client,
+                                    u,
+                                    timeout_s=timeout_s,
+                                    max_bytes=max_bytes,
+                                    range_bytes=range_bytes,
+                                    detect_soft_404=detect_soft_404,
+                                    retries=retries,
+                                    request_headers=request_headers,
+                                ),
+                                timeout=url_watchdog_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("Watchdog de validación agotado para URL: %s", u)
+                            base = _build_url_timeout_result(
+                                u,
+                                fila_excel=fila_excel,
+                                timeout_seconds=url_watchdog_timeout,
+                            )
+                        except Exception as e:
+                            base = {
+                                "Link": u,
+                                "Status": "ERROR",
+                                "HTTP_Code": None,
+                                "Detalle": f"{e.__class__.__name__}: {str(e)[:200]}",
+                                "Content_Type": "",
+                                "Redirected": "No",
+                                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "Final_URL": u,
+                                "Redirect_Chain": u,
+                                "Soft_404": "No",
+                                "Score": -100,
+                            }
 
                     # Aplicar lista blanca institucional (RAE, DOCTA, PIRHUA, etc.)
                     base = _apply_url_whitelist(base, u)
@@ -4270,6 +4828,84 @@ def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dic
 
     return rows
 
+
+def _extract_links_from_pdf_path(
+    pdf_path: str,
+    filename: str,
+    *,
+    source_url: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Fallback directo sobre el PDF original.
+
+    Extrae:
+    1) Hipervínculos/anotaciones reales del PDF (page.get_links -> uri)
+    2) URLs visibles en el texto del PDF como respaldo adicional
+    """
+    rows: List[Dict[str, Any]] = []
+
+    if fitz is None:
+        return rows
+
+    if not pdf_path or not os.path.exists(pdf_path):
+        return rows
+
+    try:
+        with fitz.open(pdf_path) as doc_pdf:
+            for page_idx in range(len(doc_pdf)):
+                page_no = str(page_idx + 1)
+                page = doc_pdf[page_idx]
+
+                page_rows: List[Dict[str, Any]] = []
+
+                try:
+                    for link_info in page.get_links() or []:
+                        raw_uri = (
+                            link_info.get("uri")
+                            or link_info.get("file")
+                            or link_info.get("url")
+                            or ""
+                        )
+                        raw_uri = _strip_invisible(str(raw_uri or "")).strip()
+                        if not raw_uri:
+                            continue
+
+                        page_rows.append(
+                            {
+                                "Nombre del Archivo": filename,
+                                "Página/Diapositiva": page_no,
+                                "Links": raw_uri,
+                                "source_url": source_url,
+                            }
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"No se pudieron leer anotaciones PDF en {pdf_path} página {page_no}: {e}"
+                    )
+
+                try:
+                    page_text = page.get_text("text") or ""
+                    for u in _extract_urls_from_text(page_text):
+                        page_rows.append(
+                            {
+                                "Nombre del Archivo": filename,
+                                "Página/Diapositiva": page_no,
+                                "Links": u,
+                                "source_url": source_url,
+                            }
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"No se pudo extraer texto PDF en {pdf_path} página {page_no}: {e}"
+                    )
+
+                rows.extend(_consolidate_link_rows(page_rows))
+
+    except Exception as e:
+        logger.error(f"Error procesando fallback PDF directo {pdf_path}: {e}")
+
+    return rows
+
 def _run_word_link_report_streamlit(
     docx_paths: List[str],
     *,
@@ -5111,6 +5747,7 @@ def page_report_broken_unificado():
     rise_unified_excel_path = ""
     rise_warnings: List[str] = []
     zip_rise_uploads: List[Tuple[str, bytes]] = []
+    zip_rise_uploads_path_fallback: List[Tuple[str, str]] = []
 
     if uploaded_files:
         for f in uploaded_files:
@@ -5179,8 +5816,12 @@ def page_report_broken_unificado():
 
                         # Rise: se mantiene la lógica actual más adelante
                         if contains_rise_xlf:
-                            # Si luego quieres hacer lo mismo para Rise, replica la misma estrategia path-based.
-                            pass
+                            zip_rise_uploads_path_fallback.append((fname, str(saved_zip_path)))
+                            try:
+                                zip_rise_uploads.append((fname, saved_zip_path.read_bytes()))
+                            except Exception:
+                                with open(saved_zip_path, "rb") as _fh:
+                                    zip_rise_uploads.append((fname, _fh.read()))
 
                         for info in zf.infolist():
                             if info.is_dir():
@@ -5243,16 +5884,36 @@ def page_report_broken_unificado():
                 for warn in h5p_warnings:
                     st.write(f"- {warn}")
 
-    if zip_rise_uploads:
-        rise_result = process_rise_zip_uploads(zip_rise_uploads, manual_dir)
-        rise_txt_input_paths = list(rise_result.get("txt_paths") or [])
-        rise_txt_meta = dict(rise_result.get("txt_meta") or {})
-        rise_report_df = rise_result.get("report_df")
+    if zip_rise_uploads or zip_rise_uploads_path_fallback:
+        rise_result = {}
+        rise_processing_error = None
+
+        if zip_rise_uploads:
+            try:
+                rise_result = process_rise_zip_uploads(zip_rise_uploads, manual_dir)
+            except Exception as exc:
+                rise_processing_error = exc
+                logger.warning("Fallo procesando XLF / Rise con payload en memoria: %s", exc)
+
+        if (not rise_result) and zip_rise_uploads_path_fallback:
+            try:
+                rise_result = process_rise_zip_uploads(zip_rise_uploads_path_fallback, manual_dir)
+                rise_processing_error = None
+            except Exception as exc:
+                rise_processing_error = exc
+                logger.error("Fallo procesando XLF / Rise con fallback por ruta: %s", exc)
+
+        if rise_processing_error and not rise_result:
+            st.warning(f"No se pudo procesar el paquete XLF / Rise: {rise_processing_error}")
+
+        rise_txt_input_paths = list((rise_result or {}).get("txt_paths") or [])
+        rise_txt_meta = dict((rise_result or {}).get("txt_meta") or {})
+        rise_report_df = (rise_result or {}).get("report_df")
         if rise_report_df is None:
             rise_report_df = pd.DataFrame()
-        rise_bundle_zip_path = str(rise_result.get("bundle_zip_path") or "")
-        rise_unified_excel_path = str(rise_result.get("unified_excel_path") or "")
-        rise_warnings = list(rise_result.get("warnings") or [])
+        rise_bundle_zip_path = str((rise_result or {}).get("bundle_zip_path") or "")
+        rise_unified_excel_path = str((rise_result or {}).get("unified_excel_path") or "")
+        rise_warnings = list((rise_result or {}).get("warnings") or [])
 
         if rise_warnings:
             with st.expander("⚠️ Advertencias del procesamiento XLF / Rise", expanded=False):
@@ -5565,7 +6226,17 @@ def page_report_broken_unificado():
                 if not os.path.exists(out_path_str):
                     continue
 
-                original_pdf_name = r.get("original_pdf_name") or Path(out_path_str).name
+                original_pdf_path = str(
+                    r.get("original_pdf_path")
+                    or r.get("file")
+                    or r.get("archivo")
+                    or ""
+                ).strip()
+
+                original_pdf_name = (
+                    r.get("original_pdf_name")
+                    or (Path(original_pdf_path).name if original_pdf_path else Path(out_path_str).name)
+                )
                 source_url = r.get("source_url")
                 display_stem = Path(original_pdf_name).stem
                 display_name = f"{display_stem}.docx"
@@ -5575,6 +6246,8 @@ def page_report_broken_unificado():
                     "display_name": display_name,
                     "source_url": source_url,
                     "origin": "pdf_to_word",
+                    "original_pdf_path": original_pdf_path,
+                    "original_pdf_name": original_pdf_name,
                 }
 
             combined_docx_paths = list(dict.fromkeys(docx_input_paths + generated_docx_paths))
@@ -5797,13 +6470,27 @@ def page_report_broken_unificado():
                             try:
                                 with open(path_obj, "rb") as fh:
                                     data_bytes = fh.read()
-                                rows = _extract_links_from_docx_bytes(
+
+                                rows_docx = _extract_links_from_docx_bytes(
                                     data_bytes,
                                     display_name,
                                 )
-                                for r in rows:
+                                for r in rows_docx:
                                     r["source_url"] = source_url
-                                all_rows.extend(rows)
+
+                                rows_final = list(rows_docx)
+
+                                if meta_info.get("origin") == "pdf_to_word":
+                                    original_pdf_path = str(meta_info.get("original_pdf_path") or "").strip()
+                                    if original_pdf_path and os.path.exists(original_pdf_path):
+                                        rows_pdf = _extract_links_from_pdf_path(
+                                            original_pdf_path,
+                                            display_name,
+                                            source_url=source_url,
+                                        )
+                                        rows_final = _consolidate_link_rows(rows_docx + rows_pdf)
+
+                                all_rows.extend(rows_final)
                             except Exception as e:
                                 logger.error(f"Error procesando Word {path_obj}: {e}")
                                 errores.append(
@@ -5862,21 +6549,41 @@ def page_report_broken_unificado():
                             )
 
                             try:
-                                with open(path_obj, "rb") as fh:
-                                    data_bytes = fh.read()
-                                rows = run_h5p_txt_link_report_streamlit(
+                                helper_result = run_h5p_txt_link_report_streamlit(
                                     [str(path_obj)],
                                     txt_meta={str(path_obj): meta_info},
                                     progress_bar=progress_bar_word,
                                     status_text=status_text_word,
                                     url_extractor=_extract_urls_from_text,
-                                )[0].to_dict("records")
+                                )
+                                rows = _coerce_helper_link_rows(
+                                    helper_result,
+                                    meta_info=meta_info,
+                                    display_name=display_name,
+                                    source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
+                                )
+                                if not rows:
+                                    rows = _extract_links_from_txt_fallback(
+                                        str(path_obj),
+                                        display_name=display_name,
+                                        meta_info=meta_info,
+                                        source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
+                                    )
                                 all_rows.extend(rows)
                             except Exception as e:
                                 logger.error(f"Error procesando H5P TXT {path_obj}: {e}")
-                                errores.append(
-                                    {"Archivo": str(path_obj), "Error": str(e)}
+                                rows = _extract_links_from_txt_fallback(
+                                    str(path_obj),
+                                    display_name=display_name,
+                                    meta_info=meta_info,
+                                    source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
                                 )
+                                if rows:
+                                    all_rows.extend(rows)
+                                else:
+                                    errores.append(
+                                        {"Archivo": str(path_obj), "Error": str(e)}
+                                    )
 
                 # Rise TXT
                 if rise_txt_paths:
@@ -5896,25 +6603,66 @@ def page_report_broken_unificado():
                             )
 
                             try:
-                                rows = run_rise_txt_link_report_streamlit(
+                                helper_result = run_rise_txt_link_report_streamlit(
                                     [str(path_obj)],
                                     txt_meta={str(path_obj): meta_info},
                                     progress_bar=progress_bar_word,
                                     status_text=status_text_word,
                                     url_extractor=_extract_urls_from_text,
-                                )[0].to_dict("records")
+                                )
+                                rows = _coerce_helper_link_rows(
+                                    helper_result,
+                                    meta_info=meta_info,
+                                    display_name=display_name,
+                                    source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
+                                )
+                                if not rows:
+                                    rows = _extract_links_from_txt_fallback(
+                                        str(path_obj),
+                                        display_name=display_name,
+                                        meta_info=meta_info,
+                                        source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
+                                    )
                                 all_rows.extend(rows)
                             except Exception as e:
                                 logger.error(f"Error procesando Rise TXT {path_obj}: {e}")
-                                errores.append(
-                                    {"Archivo": str(path_obj), "Error": str(e)}
+                                rows = _extract_links_from_txt_fallback(
+                                    str(path_obj),
+                                    display_name=display_name,
+                                    meta_info=meta_info,
+                                    source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
                                 )
+                                if rows:
+                                    all_rows.extend(rows)
+                                else:
+                                    errores.append(
+                                        {"Archivo": str(path_obj), "Error": str(e)}
+                                    )
 
                 if all_rows:
+                    all_rows = _consolidate_link_rows(all_rows)
                     df_links = pd.DataFrame(all_rows)
-                    df_links = df_links.sort_values(
-                        ["Nombre del Archivo", "Página/Diapositiva", "Links"]
-                    ).reset_index(drop=True)
+
+                    for required_col in (
+                        "Nombre del Archivo",
+                        "Archivo",
+                        "name",
+                        "link_class",
+                        "Página/Diapositiva",
+                        "Links",
+                        "source_url",
+                    ):
+                        if required_col not in df_links.columns:
+                            df_links[required_col] = ""
+
+                    sort_cols = [
+                        col for col in ["Nombre del Archivo", "Página/Diapositiva", "Links"]
+                        if col in df_links.columns
+                    ]
+                    if sort_cols:
+                        df_links = df_links.sort_values(sort_cols).reset_index(drop=True)
+                    else:
+                        df_links = df_links.reset_index(drop=True)
                 else:
                     df_links = pd.DataFrame(
                         columns=[
@@ -6038,12 +6786,32 @@ def page_report_broken_unificado():
         default_scheme=default_scheme,
     )
 
+    current_status_signature = (
+        tuple(links_with_rows),
+        tuple(
+            zip(
+                df_invalid["Fila_Excel"].astype(int).tolist(),
+                df_invalid["Valor"].astype(str).tolist(),
+                df_invalid["Motivo"].astype(str).tolist(),
+            )
+        ) if not df_invalid.empty else ()
+    )
+
+    prev_status_signature = st.session_state.get("pipeline_status_signature")
+
+    if prev_status_signature != current_status_signature:
+        st.session_state["pipeline_status_signature"] = current_status_signature
+        st.session_state["pipeline_status_done"] = False
+        st.session_state["status_result_df"] = None
+        st.session_state["status_export_df"] = None
+        st.session_state["status_excel_bytes"] = None
+        st.session_state["status_excel_filename"] = None
+        st.session_state["status_excel_auto_downloaded"] = False
+
     st.session_state.status_input_filename = "Reporte_Link_Automatizado"
     st.session_state.status_input_df = df_in
     st.session_state.status_links_list = links_with_rows
-    st.session_state.status_result_df = None
     st.session_state.status_invalid_df = df_invalid
-    st.session_state.status_export_df = None
 
     with st.expander("Detalle de Links", expanded=True):
         c1, c2, c3 = st.columns(3)
@@ -6126,6 +6894,7 @@ def page_report_broken_unificado():
                                 verify_ssl=bool(verify_ssl),
                                 max_bytes=int(max_bytes),
                                 range_bytes=int(range_bytes),
+                                hard_timeout_per_url_s=float(DEFAULT_HARD_TIMEOUT_PER_URL_S),
                                 progress_callback=progress_cb_single,
                             )
                         )
@@ -6170,6 +6939,7 @@ def page_report_broken_unificado():
                                     verify_ssl=bool(verify_ssl),
                                     max_bytes=int(max_bytes),
                                     range_bytes=int(range_bytes),
+                                    hard_timeout_per_url_s=float(DEFAULT_HARD_TIMEOUT_PER_URL_S),
                                     progress_callback=progress_cb_block,
                                 )
                             )
@@ -6543,6 +7313,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
