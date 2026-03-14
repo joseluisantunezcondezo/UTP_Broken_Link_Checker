@@ -2137,7 +2137,6 @@ def _split_repeated_scheme_url(raw_url: str) -> str:
 
     return s
 
-
 def _is_likely_truncated_url(url: str) -> bool:
     """
     Marca como truncadas las URLs extraídas incompletas para que no pasen a la fase HTTP.
@@ -2301,6 +2300,8 @@ def _normalize_url_for_join(value: Any) -> str:
     - Quita espacios en blanco alrededor
     - Normaliza scheme y dominio a minúsculas
     - Elimina barra final redundante
+    - Elimina puertos por defecto (:80 en http, :443 en https)
+      para evitar duplicados del mismo recurso
     """
     if value is None:
         return ""
@@ -2310,10 +2311,28 @@ def _normalize_url_for_join(value: Any) -> str:
 
     try:
         p = urlparse(s)
+
+        scheme = (p.scheme or "").lower()
+        netloc = (p.netloc or "").lower()
+
+        if netloc:
+            userinfo = ""
+            hostport = netloc
+
+            if "@" in hostport:
+                userinfo, hostport = hostport.rsplit("@", 1)
+
+            if ":" in hostport and not hostport.endswith("]"):
+                host, port = hostport.rsplit(":", 1)
+                if (scheme == "http" and port == "80") or (scheme == "https" and port == "443"):
+                    hostport = host
+
+            netloc = f"{userinfo}@{hostport}" if userinfo else hostport
+
         return urlunparse(
             (
-                (p.scheme or "").lower(),
-                (p.netloc or "").lower(),
+                scheme,
+                netloc,
                 (p.path or "").rstrip("/"),
                 p.params,
                 p.query,
@@ -2347,7 +2366,6 @@ def _extract_filename_from_source_value(value: Any) -> str:
         return ""
 
     return candidate
-
 
 def _fill_archivo_column(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -2499,6 +2517,135 @@ def _identity_query_items(url: str):
     return items
 
 
+def _looks_like_truncated_path_prefix(path_a: str, path_b: str) -> bool:
+    """
+    Detecta cuando una URL quedó truncada dentro del path mientras otra conserva
+    una variante más completa del mismo recurso.
+    """
+    shorter_path, longer_path = sorted(
+        [str(path_a or "").rstrip("/"), str(path_b or "").rstrip("/")],
+        key=len,
+    )
+
+    if not shorter_path or not longer_path or shorter_path == longer_path:
+        return False
+
+    try:
+        shorter_parts = [unquote(part) for part in shorter_path.split("/") if part]
+        longer_parts = [unquote(part) for part in longer_path.split("/") if part]
+    except Exception:
+        return False
+
+    if not shorter_parts or not longer_parts:
+        return False
+
+    if len(shorter_parts) == len(longer_parts):
+        if shorter_parts[:-1] != longer_parts[:-1]:
+            return False
+
+        short_last = _strip_invisible(shorter_parts[-1]).strip()
+        long_last = _strip_invisible(longer_parts[-1]).strip()
+
+        if not short_last or not long_last or short_last == long_last:
+            return False
+
+        if len(short_last) < 8 or len(long_last) <= len(short_last):
+            return False
+
+        if short_last.isdigit() or long_last.isdigit():
+            return False
+
+        if not long_last.startswith(short_last):
+            return False
+
+        long_ext = Path(long_last).suffix.lower()
+        if long_ext in {
+            ".pdf", ".doc", ".docx", ".ppt", ".pptx",
+            ".xls", ".xlsx", ".zip", ".txt", ".html", ".htm",
+        }:
+            return True
+
+        next_char = long_last[len(short_last)]
+        if next_char in {"-", "_", ".", "%"}:
+            return True
+
+        return False
+
+    if len(shorter_parts) > len(longer_parts):
+        return False
+
+    if shorter_parts[:-1] != longer_parts[: len(shorter_parts) - 1]:
+        return False
+
+    short_last = _strip_invisible(shorter_parts[-1]).strip()
+    long_last_prefix = _strip_invisible(longer_parts[len(shorter_parts) - 1]).strip()
+
+    if not short_last or not long_last_prefix:
+        return False
+
+    if len(short_last) < 8:
+        return False
+
+    if long_last_prefix.startswith(short_last):
+        if len(long_last_prefix) > len(short_last):
+            return True
+        if len(longer_parts) > len(shorter_parts):
+            return True
+
+    return False
+
+def _looks_like_truncated_query_prefix(url_a: str, url_b: str) -> bool:
+    """
+    Detecta cuando dos URLs tienen mismo host y path, pero una consulta quedó
+    truncada y la otra conserva el valor completo.
+    """
+    try:
+        pa = urlparse(str(url_a or "").strip())
+        pb = urlparse(str(url_b or "").strip())
+    except Exception:
+        return False
+
+    if (pa.netloc or "").lower() != (pb.netloc or "").lower():
+        return False
+
+    if (pa.path or "").rstrip("/") != (pb.path or "").rstrip("/"):
+        return False
+
+    qa = parse_qs(pa.query or "", keep_blank_values=False)
+    qb = parse_qs(pb.query or "", keep_blank_values=False)
+
+    keys_a = [k for k in qa.keys() if not str(k).lower().startswith("utm_") and str(k).lower() not in _TRACKING_QUERY_KEYS]
+    keys_b = [k for k in qb.keys() if not str(k).lower().startswith("utm_") and str(k).lower() not in _TRACKING_QUERY_KEYS]
+
+    if not keys_a or not keys_b or set(keys_a) != set(keys_b):
+        return False
+
+    found_prefix = False
+
+    for key in set(keys_a):
+        vals_a = [unquote(str(v or "")).strip() for v in qa.get(key, []) if str(v or "").strip()]
+        vals_b = [unquote(str(v or "")).strip() for v in qb.get(key, []) if str(v or "").strip()]
+
+        if not vals_a or not vals_b:
+            return False
+
+        val_a = vals_a[0]
+        val_b = vals_b[0]
+        if val_a == val_b:
+            continue
+
+        shorter_val, longer_val = sorted([val_a, val_b], key=len)
+        if len(shorter_val) < 8 or len(longer_val) <= len(shorter_val):
+            return False
+
+        if not longer_val.startswith(shorter_val):
+            return False
+
+        found_prefix = True
+
+    return found_prefix
+
+
 def _same_resource_candidate(url_a: str, url_b: str) -> bool:
     raw_a = _strip_invisible(str(url_a or "")).strip()
     raw_b = _strip_invisible(str(url_b or "")).strip()
@@ -2530,6 +2677,13 @@ def _same_resource_candidate(url_a: str, url_b: str) -> bool:
     path_a = (pa.path or "").rstrip("/")
     path_b = (pb.path or "").rstrip("/")
     if path_a != path_b:
+        if _looks_like_truncated_path_prefix(path_a, path_b):
+            id_a = _identity_query_items(a)
+            id_b = _identity_query_items(b)
+            if not id_a or not id_b:
+                return True
+            if id_a == id_b or id_a.issubset(id_b) or id_b.issubset(id_a):
+                return True
         return False
 
     shorter, longer = sorted([a, b], key=len)
@@ -2550,6 +2704,9 @@ def _same_resource_candidate(url_a: str, url_b: str) -> bool:
         if id_a.issubset(id_b) or id_b.issubset(id_a):
             if _is_probably_truncated_url(a) or _is_probably_truncated_url(b):
                 return True
+
+    if _looks_like_truncated_query_prefix(a, b):
+        return True
 
     return False
 
@@ -2600,7 +2757,6 @@ def _url_quality_score(url: str) -> int:
 
     return score
 
-
 def _choose_better_link_row(row_a: Dict[str, Any], row_b: Dict[str, Any]) -> Dict[str, Any]:
     url_a = str(row_a.get("Links", "") or "")
     url_b = str(row_b.get("Links", "") or "")
@@ -2616,6 +2772,88 @@ def _choose_better_link_row(row_a: Dict[str, Any], row_b: Dict[str, Any]) -> Dic
     if len(url_b) > len(url_a):
         return row_b
     return row_a
+
+
+def _same_global_variant_candidate(url_a: str, url_b: str) -> bool:
+    """
+    Detecta variantes globales del mismo recurso cuando una URL llega incompleta
+    y otra completa, incluso si provienen de PDFs distintos.
+
+    Importante:
+    - No fusiona URLs idénticas ya normalizadas.
+    - Solo marca como candidatas variantes realmente distintas del mismo recurso.
+    """
+    norm_a = _normalize_url_for_join(url_a)
+    norm_b = _normalize_url_for_join(url_b)
+
+    if not norm_a or not norm_b:
+        return False
+
+    if norm_a == norm_b:
+        return False
+
+    return _same_resource_candidate(url_a, url_b)
+
+
+def _drop_global_inferior_url_variants(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Elimina únicamente variantes inferiores de una misma URL a nivel global del reporte,
+    conservando la versión más completa cuando el mismo recurso aparece truncado en un
+    PDF y completo en otro PDF.
+
+    No elimina repeticiones exactas de la misma URL entre archivos distintos; solo descarta
+    la variante peor cuando compite con otra claramente más completa del mismo recurso.
+    """
+    if not rows:
+        return []
+
+    kept: List[Dict[str, Any]] = []
+    host_buckets: Dict[str, List[int]] = {}
+
+    def _row_host(url_value: str) -> str:
+        raw = _strip_invisible(str(url_value or "")).strip()
+        if not raw:
+            return ""
+
+        norm, _ = _normalize_one_url(raw, default_scheme="https")
+        final_url = norm or raw
+
+        try:
+            return (urlparse(final_url).netloc or "").lower()
+        except Exception:
+            return ""
+
+    for row in rows:
+        row_url = str(row.get("Links", "") or "").strip()
+        if not row_url:
+            kept.append(row)
+            continue
+
+        host = _row_host(row_url)
+        candidate_indexes = host_buckets.get(host, []) if host else list(range(len(kept)))
+        merged = False
+
+        for idx in candidate_indexes:
+            current = kept[idx]
+            current_url = str(current.get("Links", "") or "").strip()
+            if not current_url:
+                continue
+
+            if not _same_global_variant_candidate(current_url, row_url):
+                continue
+
+            better = _choose_better_link_row(current, row)
+            if better is row:
+                kept[idx] = row
+            merged = True
+            break
+
+        if not merged:
+            kept.append(row)
+            if host:
+                host_buckets.setdefault(host, []).append(len(kept) - 1)
+
+    return kept
 
 
 def _consolidate_link_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2879,7 +3117,6 @@ def _requests_available_or_warn() -> bool:
         return False
     return True
 
-
 # ======================================================
 # CORE LINK CHECKER V5 (ULTRA ROBUSTO)
 # ======================================================
@@ -3067,7 +3304,6 @@ def _compute_url_watchdog_timeout(url: str, timeout_s: float, retries: int) -> f
         bonus += 4.0
 
     return min(90.0, max(20.0, total + bonus))
-
 
 async def _fetch_limited_text_v5(
     client: "httpx.AsyncClient",
@@ -4266,7 +4502,6 @@ def _group_files_by_size(file_paths: List[str], max_mb: int = MAX_ZIP_BLOCK_MB) 
 
     return groups
 
-
 def _zip_paths_to_bytes(file_paths: List[str]) -> bytes:
     """
     Construye un ZIP en memoria sólo con los archivos indicados en `file_paths`.
@@ -5264,7 +5499,6 @@ def _run_pptx_link_report_streamlit(
     logger.info("Análisis de PPTX completado en %.2fs", elapsed)
 
     return df, errores
-
 
 def _run_pdf_extraction_streamlit(
     pdf_paths: List[str],
@@ -6869,6 +7103,7 @@ def page_report_broken_unificado():
 
                 if all_rows:
                     all_rows = _consolidate_link_rows(all_rows)
+                    all_rows = _drop_global_inferior_url_variants(all_rows)
                     df_links = pd.DataFrame(all_rows)
 
                     for required_col in (
