@@ -11,12 +11,14 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Sequence
 from urllib.parse import urlparse, urlunparse, quote, parse_qs, unquote
 import tempfile
+import json
 import zipfile
 import io
 import shutil
+import xml.etree.ElementTree as ET
 
 # =========================
 # Dependencias PDF / Word / PPT
@@ -47,6 +49,7 @@ except ImportError:  # pragma: no cover
 import pandas as pd
 import streamlit as st
 import base64
+import html
 import streamlit.components.v1 as components
 
 try:
@@ -2855,7 +2858,6 @@ def _drop_global_inferior_url_variants(rows: List[Dict[str, Any]]) -> List[Dict[
 
     return kept
 
-
 def _consolidate_link_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Consolida filas de enlaces provenientes de distintas fuentes (DOCX + PDF directo,
@@ -2949,7 +2951,6 @@ def _first_non_empty_value(mapping: Any, keys: List[str], default: str = "") -> 
 
     return default
 
-
 def _coerce_helper_link_rows(
     helper_output: Any,
     *,
@@ -3040,7 +3041,6 @@ def _coerce_helper_link_rows(
 
     return rows
 
-
 def _extract_links_from_txt_fallback(
     txt_path: str,
     *,
@@ -3127,7 +3127,6 @@ def _host_key(url: str) -> str:
         return p.netloc.lower()
     except Exception:
         return "unknown"
-
 
 def _is_html_like(content_type: Optional[str]) -> bool:
     if not content_type:
@@ -5095,6 +5094,305 @@ def _extract_urls_from_text(text: str) -> List[str]:
 
     return urls
 
+def _iter_nested_string_values(obj: Any):
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _iter_nested_string_values(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_nested_string_values(item)
+    elif isinstance(obj, str):
+        text = _strip_invisible(obj)
+        if text:
+            yield text
+
+def _register_page_url(page_map: Dict[str, str], raw_url: str, page_no: int) -> None:
+    raw_text = html.unescape(str(raw_url or '')).replace(" ", " ")
+    raw_text = _strip_invisible(raw_text).strip()
+    raw_text = re.sub(r'&(nbsp|amp|quot|lt|gt);?$', '', raw_text, flags=re.IGNORECASE)
+    raw_text = raw_text.rstrip(".,;:!?)[]{}\"' ")
+    if not raw_text:
+        return
+
+    normalized_url, _ = _normalize_one_url(
+        raw_text,
+        default_scheme='https',
+        allow_mailto=False,
+        allow_tel=False,
+        allow_anchors_only=False,
+    )
+    final_url = normalized_url or raw_text
+    join_key = _normalize_url_for_join(final_url)
+    if not join_key:
+        return
+
+    page_map.setdefault(join_key, str(page_no))
+
+def _build_h5p_url_page_map_from_h5p_bytes(h5p_bytes: bytes) -> Dict[str, str]:
+    page_map: Dict[str, str] = {}
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(h5p_bytes), 'r') as zf:
+            if 'content/content.json' not in zf.namelist():
+                return page_map
+
+            raw_content = zf.read('content/content.json')
+            content_json = json.loads(raw_content.decode('utf-8', errors='ignore'))
+            chapters = content_json.get('chapters') or []
+            if not isinstance(chapters, list) or not chapters:
+                chapters = [content_json]
+
+            for page_no, chapter in enumerate(chapters, start=1):
+                for text_value in _iter_nested_string_values(chapter):
+                    for found_url in _extract_urls_from_text(text_value):
+                        _register_page_url(page_map, found_url, page_no)
+    except Exception as exc:
+        logger.warning('No se pudo construir mapa URL→página para H5P: %s', exc)
+
+    return page_map
+
+
+def _extract_rise_course_id(value: Any) -> str:
+    raw = _strip_invisible(str(value or '')).strip()
+    if not raw:
+        return ''
+
+    try:
+        parsed = urlparse(raw)
+        if parsed.scheme in ('http', 'https'):
+            parts = [part for part in (parsed.path or '').split('/') if part]
+            if 'authoring' in parts:
+                idx = parts.index('authoring')
+                if idx + 1 < len(parts):
+                    return _strip_invisible(parts[idx + 1])
+    except Exception:
+        pass
+
+    base_name = Path(unquote(raw)).name
+    stem = Path(base_name).stem
+    match = re.match(r'^([A-Za-z0-9_-]{8,}?)_\d{8}_\d{6}(?:_\d+)?$', stem)
+    if match:
+        return _strip_invisible(match.group(1))
+
+    return ''
+
+
+def _build_rise_url_page_map_from_xlf_bytes(xlf_bytes: bytes) -> Dict[str, str]:
+    page_map: Dict[str, str] = {}
+
+    try:
+        root = ET.fromstring(xlf_bytes)
+    except Exception as exc:
+        logger.warning('No se pudo leer XLF para construir mapa URL→página: %s', exc)
+        return page_map
+
+    ns = {'x': 'urn:oasis:names:tc:xliff:document:1.2'}
+    file_nodes = root.findall('x:file', ns)
+    if not file_nodes:
+        file_nodes = [node for node in root.iter() if str(getattr(node, 'tag', '')).endswith('file')]
+
+    page_no = 0
+    for file_node in file_nodes:
+        original = _strip_invisible(str(file_node.attrib.get('original', '') or '')).strip()
+        if original.lower() == 'course':
+            continue
+
+        page_no += 1
+        page_texts: List[str] = []
+
+        for elem in file_node.iter():
+            tag_name = str(getattr(elem, 'tag', '')).split('}')[-1]
+            if tag_name not in ('source', 'target'):
+                continue
+            text_value = _strip_invisible(''.join(elem.itertext()))
+            if text_value:
+                page_texts.append(text_value)
+
+        if not page_texts:
+            fallback_text = _strip_invisible(''.join(file_node.itertext()))
+            if fallback_text:
+                page_texts.append(fallback_text)
+
+        for text_value in page_texts:
+            for found_url in _extract_urls_from_text(text_value):
+                _register_page_url(page_map, found_url, page_no)
+
+    return page_map
+
+
+def _build_h5p_alias_candidates(value: Any) -> List[str]:
+    raw = _strip_invisible(str(value or '')).strip()
+    if not raw:
+        return []
+
+    candidates = set()
+
+    try:
+        parsed = urlparse(raw)
+        if parsed.scheme in ('http', 'https'):
+            path_name = Path(unquote(parsed.path or '')).name
+            if path_name:
+                raw = path_name
+            parts = [part for part in (parsed.path or '').split('/') if part]
+            if 'content' in parts:
+                idx = parts.index('content')
+                if idx + 1 < len(parts):
+                    candidates.add(_strip_invisible(parts[idx + 1]).casefold())
+    except Exception:
+        pass
+
+    base_name = Path(unquote(raw)).name
+    stem = Path(base_name).stem
+
+    for item in (base_name, stem):
+        item_text = _strip_invisible(item).strip()
+        if item_text:
+            candidates.add(item_text.casefold())
+
+    for source in (base_name, stem):
+        match = re.match(r'^(\d{8,})[_-]', source)
+        if match:
+            candidates.add(match.group(1).casefold())
+
+    return [item for item in candidates if item]
+
+
+def _build_rise_alias_candidates(value: Any) -> List[str]:
+    raw = _strip_invisible(str(value or '')).strip()
+    if not raw:
+        return []
+
+    candidates = set()
+    base_name = Path(unquote(raw)).name
+    stem = Path(base_name).stem
+
+    for item in (base_name, stem):
+        item_text = _strip_invisible(item).strip()
+        if item_text:
+            candidates.add(item_text.casefold())
+
+    course_id = _extract_rise_course_id(raw)
+    if course_id:
+        candidates.add(course_id.casefold())
+
+    return [item for item in candidates if item]
+
+
+def _build_h5p_page_map_registry(zip_uploads: Sequence[Tuple[str, str]]) -> Dict[str, Dict[str, str]]:
+    registry: Dict[str, Dict[str, str]] = {}
+
+    for _, zip_path in zip_uploads or []:
+        if not zip_path or not os.path.exists(zip_path):
+            continue
+
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as outer_zip:
+                for info in outer_zip.infolist():
+                    if info.is_dir() or not info.filename.lower().endswith('.h5p'):
+                        continue
+
+                    page_map = _build_h5p_url_page_map_from_h5p_bytes(outer_zip.read(info.filename))
+                    if not page_map:
+                        continue
+
+                    aliases = _build_h5p_alias_candidates(info.filename)
+                    for alias in aliases:
+                        registry[alias] = page_map
+        except Exception as exc:
+            logger.warning('No se pudo construir registry de páginas H5P para %s: %s', zip_path, exc)
+
+    return registry
+
+def _build_rise_page_map_registry(zip_uploads: Sequence[Tuple[str, str]]) -> Dict[str, Dict[str, str]]:
+    registry: Dict[str, Dict[str, str]] = {}
+
+    for _, zip_path in zip_uploads or []:
+        if not zip_path or not os.path.exists(zip_path):
+            continue
+
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as outer_zip:
+                for info in outer_zip.infolist():
+                    if info.is_dir() or not info.filename.lower().endswith(('.xlf', '.xliff', '.xml')):
+                        continue
+
+                    page_map = _build_rise_url_page_map_from_xlf_bytes(outer_zip.read(info.filename))
+                    if not page_map:
+                        continue
+
+                    aliases = _build_rise_alias_candidates(info.filename)
+                    for alias in aliases:
+                        registry[alias] = page_map
+        except Exception as exc:
+            logger.warning('No se pudo construir registry de páginas XLF/Rise para %s: %s', zip_path, exc)
+
+    return registry
+
+def _attach_page_maps_to_txt_meta(
+    txt_meta: Dict[str, Dict[str, Any]],
+    registry: Dict[str, Dict[str, str]],
+    *,
+    kind: str,
+) -> Dict[str, Dict[str, Any]]:
+    if not txt_meta or not registry:
+        return txt_meta
+
+    updated: Dict[str, Dict[str, Any]] = {}
+    alias_builder = _build_h5p_alias_candidates if kind == 'h5p' else _build_rise_alias_candidates
+
+    for txt_path, meta in txt_meta.items():
+        meta_copy = dict(meta or {})
+        page_map = None
+
+        candidate_values: List[str] = []
+        for key in (
+            'local_filename', 'display_name', 'Archivo', 'content_id', 'name', 'title',
+            'link_class', 'source_url', 'url', 'archivo_xliff', 'course_id', 'curso_id',
+        ):
+            value = _strip_invisible(str(meta_copy.get(key, '') or '')).strip()
+            if value:
+                candidate_values.append(value)
+
+        candidate_values.append(Path(txt_path).name)
+        candidate_values.append(Path(txt_path).stem)
+
+        for value in candidate_values:
+            for alias in alias_builder(value):
+                if alias in registry:
+                    page_map = registry[alias]
+                    break
+            if page_map:
+                break
+
+        if page_map:
+            meta_copy['_url_page_map'] = page_map
+
+        updated[txt_path] = meta_copy
+
+    return updated
+
+def _apply_page_numbers_to_link_rows(rows: List[Dict[str, Any]], meta_info: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    if not rows:
+        return rows
+
+    meta_info = meta_info or {}
+    page_map = meta_info.get('_url_page_map') or {}
+    if not page_map:
+        return rows
+
+    updated_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        row_copy = dict(row)
+        current_page = _strip_invisible(str(row_copy.get('Página/Diapositiva', '') or '')).strip()
+        if not current_page:
+            link_value = _strip_invisible(str(row_copy.get('Links', '') or '')).strip()
+            link_key = _normalize_url_for_join(link_value)
+            page_no = page_map.get(link_key)
+            if page_no:
+                row_copy['Página/Diapositiva'] = str(page_no)
+        updated_rows.append(row_copy)
+
+    return updated_rows
 # ======================================================
 # FUNCIÓN AUXILIAR PARA WORD
 # ======================================================
@@ -6341,6 +6639,14 @@ def page_report_broken_unificado():
         h5p_unified_excel_path = str(h5p_result.get("unified_excel_path") or "")
         h5p_warnings = list(h5p_result.get("warnings") or [])
 
+        h5p_page_registry = _build_h5p_page_map_registry(zip_h5p_uploads)
+        if h5p_page_registry and h5p_txt_meta:
+            h5p_txt_meta = _attach_page_maps_to_txt_meta(
+                h5p_txt_meta,
+                h5p_page_registry,
+                kind="h5p",
+            )
+
         if h5p_warnings:
             with st.expander("⚠️ Advertencias del procesamiento H5P", expanded=False):
                 for warn in h5p_warnings:
@@ -6376,6 +6682,14 @@ def page_report_broken_unificado():
         rise_bundle_zip_path = str((rise_result or {}).get("bundle_zip_path") or "")
         rise_unified_excel_path = str((rise_result or {}).get("unified_excel_path") or "")
         rise_warnings = list((rise_result or {}).get("warnings") or [])
+
+        rise_page_registry = _build_rise_page_map_registry(zip_rise_uploads_path_fallback)
+        if rise_page_registry and rise_txt_meta:
+            rise_txt_meta = _attach_page_maps_to_txt_meta(
+                rise_txt_meta,
+                rise_page_registry,
+                kind="rise",
+            )
 
         if rise_warnings:
             with st.expander("⚠️ Advertencias del procesamiento XLF / Rise", expanded=False):
@@ -7031,6 +7345,7 @@ def page_report_broken_unificado():
                                         meta_info=meta_info,
                                         source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
                                     )
+                                rows = _apply_page_numbers_to_link_rows(rows, meta_info)
                                 all_rows.extend(rows)
                             except Exception as e:
                                 logger.error(f"Error procesando H5P TXT {path_obj}: {e}")
@@ -7041,6 +7356,7 @@ def page_report_broken_unificado():
                                     source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
                                 )
                                 if rows:
+                                    rows = _apply_page_numbers_to_link_rows(rows, meta_info)
                                     all_rows.extend(rows)
                                 else:
                                     errores.append(
@@ -7085,6 +7401,7 @@ def page_report_broken_unificado():
                                         meta_info=meta_info,
                                         source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
                                     )
+                                rows = _apply_page_numbers_to_link_rows(rows, meta_info)
                                 all_rows.extend(rows)
                             except Exception as e:
                                 logger.error(f"Error procesando Rise TXT {path_obj}: {e}")
@@ -7095,6 +7412,7 @@ def page_report_broken_unificado():
                                     source_url=str(meta_info.get("link_class") or meta_info.get("source_url") or ""),
                                 )
                                 if rows:
+                                    rows = _apply_page_numbers_to_link_rows(rows, meta_info)
                                     all_rows.extend(rows)
                                 else:
                                     errores.append(
@@ -7696,6 +8014,7 @@ def page_report_broken_unificado():
         )
 
     # 🔹 Auto-descarga: sólo la primera vez después de una validación nueva
+    
     if (
         st.session_state.get("pipeline_status_done", False)
         and not st.session_state.get("status_excel_auto_downloaded", False)
@@ -7731,6 +8050,7 @@ def page_report_broken_unificado():
 # ======================================================
 # MAIN
 # ======================================================
+
 def main():
     st.set_page_config(
         page_title=APP_TITLE,
