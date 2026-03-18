@@ -457,6 +457,6 @@ Puede deberse a:
 
 ## Autor
 
-** José Luis Antúnez Condezo**
+**José Luis Antúnez Condezo**
 
 Proyecto orientado a automatización documental, validación de enlaces y mejora de calidad en contenidos académicos.
