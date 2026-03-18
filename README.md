@@ -179,15 +179,16 @@ Aplica la lógica de validación de enlaces y genera la salida final:
 
 ```mermaid
 flowchart TD
-    A[Interfaz Streamlit] --> B[Orquestación con session_state]
-    B --> C[Ingesta de archivos]
-    C --> D1[Descarga masiva desde Excel]
-    C --> D2[Carga Directa
-             (PDF-DOCX-PPTX-ZIP)]
-    D1 --> E[Procesamiento documental]
+    A["Interfaz Streamlit"] --> B["Orquestación con session_state"]
+    B --> C["Ingesta de archivos"]
+    C --> D1["Descarga masiva
+              (Excel con URLs)"]
+    C --> D2["Carga Directa
+             (PDF-DOCX-PPTX-ZIP)"]
+    D1 --> E["Procesamiento documental"]
     D2 --> E
-    E --> F1[PDF a DOCX]
-    E --> F2[Extracción de links DOCX]
+    E --> F1["PDF a DOCX"]
+    E --> F2["Extracción de links DOCX"]
     E --> F3[Extracción de links PPTX]
     E --> F4[Conversión H5P ZIP a TXT]
     E --> F5[Conversión Rise XLF ZIP a TXT]
