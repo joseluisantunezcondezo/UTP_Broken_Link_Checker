@@ -198,7 +198,7 @@ flowchart TD
     F4 --> G
     F5 --> G
     G --> H["Validación HTTP
-            & Reglas de Negocio"
+            & Reglas de Negocio"]
     H --> I[Excel final Status]
 ```
 
