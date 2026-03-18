@@ -183,8 +183,8 @@ flowchart TD
     B --> C["Ingesta de archivos"]
     C --> D1["Descarga masiva
               (Excel con URLs)"]
-    C --> D2["Carga Directa
-             (PDF-DOCX-PPTX-ZIP)"]
+    C --> D2["Carga Directa PDF-DOCX-PPTX &
+              ZIP (PDF-DOCX-PPTX-H5P-RISE)"]
     D1 --> E["Normalización de archivos"]
     D2 --> E
     E --> F1["PDF a DOCX"]
