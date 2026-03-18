@@ -185,7 +185,7 @@ flowchart TD
               (Excel con URLs)"]
     C --> D2["Carga Directa
              (PDF-DOCX-PPTX-ZIP)"]
-    D1 --> E["Procesamiento documental"]
+    D1 --> E["Normalización de archivos"]
     D2 --> E
     E --> F1["PDF a DOCX"]
     E --> F2["Extracción de links DOCX"]
