@@ -181,8 +181,8 @@ Aplica la lógica de validación de enlaces y genera la salida final:
 flowchart TD
     A[Interfaz Streamlit] --> B[Orquestación con session_state]
     B --> C[Ingesta de archivos]
-    C --> D1[Descarga masiva desde Excel]
-    C --> D2[Carga directa de PDF DOCX PPTX ZIP]
+    C --> D1[Descarga Masiva - Excel]
+    C --> D2[Carga Directa - PDF DOCX PPTX ZIP]
     D1 --> E[Procesamiento documental]
     D2 --> E
     E --> F1[PDF a DOCX]
