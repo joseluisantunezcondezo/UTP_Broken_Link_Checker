@@ -190,8 +190,8 @@ flowchart TD
     E --> F1["PDF a DOCX"]
     E --> F2["Extracción de links DOCX"]
     E --> F3[Extracción de links PPTX]
-    E --> F4[Conversión H5P ZIP a TXT]
-    E --> F5[Conver. Rise XLF ZIP a TXT]
+    E --> F4[Extracción de links H5P ZIP]
+    E --> F5[Extracción de links XLF ZIP]
     F1 --> G[Consolidación de links]
     F2 --> G
     F3 --> G
