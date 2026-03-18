@@ -2,6 +2,9 @@
 
 Aplicativo web en **Streamlit** para **detectar enlaces rotos** en documentos académicos y administrativos, reducir la revisión manual y generar un **reporte final en Excel** con estado **ACTIVO/ROTO**.
 
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-App-FF4B4B.svg)](https://streamlit.io/)
+[![Estado](https://img.shields.io/badge/Estado-Producción-success.svg)]()
 ---
 
 ## Descripción general
