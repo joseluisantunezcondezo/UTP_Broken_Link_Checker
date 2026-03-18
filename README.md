@@ -185,7 +185,8 @@ flowchart TD
               (Excel con URLs)"]
     C --> D2["Carga Directa o ZIP
             (PDF-DOCX-PPTX-H5P-RISE)"]
-    D1 --> E["Normalización de archivos"]
+    D1 --> E["Normalización de archivos
+            (Conver. Rise XLF/H5P ZIP a TXT)"]
     D2 --> E
     E --> F1["PDF a DOCX"]
     E --> F2["Extracción de links DOCX"]
