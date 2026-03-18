@@ -20,6 +20,8 @@ Aplicativo web en **Streamlit** para **detectar enlaces rotos** en documentos ac
 
 Está pensado para equipos académicos, áreas de calidad, producción de contenidos y usuarios que necesitan verificar material digital antes de su publicación o distribución.
 
+<img width="1645" height="818" alt="image" src="https://github.com/user-attachments/assets/2189bb33-f787-4b29-9249-6a8cbd793d54" />
+
 ---
 
 ## ¿Qué problema resuelve?
