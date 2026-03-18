@@ -191,13 +191,14 @@ flowchart TD
     E --> F2["Extracción de links DOCX"]
     E --> F3[Extracción de links PPTX]
     E --> F4[Conversión H5P ZIP a TXT]
-    E --> F5[Conversión Rise XLF ZIP a TXT]
+    E --> F5[Conver. Rise XLF ZIP a TXT]
     F1 --> G[Consolidación de links]
     F2 --> G
     F3 --> G
     F4 --> G
     F5 --> G
-    G --> H[Validación HTTP y reglas de negocio]
+    G --> H["Validación HTTP
+            & Reglas de Negocio"
     H --> I[Excel final Status]
 ```
 
