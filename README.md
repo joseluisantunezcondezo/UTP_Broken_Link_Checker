@@ -1,6 +1,6 @@
 # UTP - Broken Link Checker
 
-Aplicativo web desarrollado en **Streamlit** para **detectar enlaces rotos** en documentos académicos y administrativos, reducir la revisión manual y generar un **reporte final en Excel** con estado **ACTIVO/ROTO**.
+Aplicativo web en **Streamlit** para **detectar enlaces rotos** en documentos académicos y administrativos, reducir la revisión manual y generar un **reporte final en Excel** con estado **ACTIVO/ROTO**.
 
 ---
 
@@ -8,12 +8,12 @@ Aplicativo web desarrollado en **Streamlit** para **detectar enlaces rotos** en 
 
 **UTP - Broken Link Checker** automatiza un proceso que normalmente consume mucho tiempo:
 
-1. recibe un **Excel con URLs** de documentos,
-2. descarga automáticamente archivos compatibles,
-3. procesa documentos **PDF, Word, PowerPoint, H5P y XLF/Rise**,
-4. extrae los enlaces detectados,
-5. valida si cada enlace sigue activo,
-6. entrega un **Excel final de status** para revisión y corrección.
+1. Recibe un **Excel con URLs** de documentos.
+2. Descarga automáticamente archivos compatibles.
+3. Procesa documentos **ZIP, PDF, Word, PowerPoint, H5P y XLF/Rise**.
+4. Extrae los enlaces detectados.
+5. Valida si cada enlace sigue activo.
+6. Entrega un **Excel final de status** para revisión y corrección.
 
 Está pensado para equipos académicos, áreas de calidad, producción de contenidos y usuarios que necesitan verificar material digital antes de su publicación o distribución.
 
@@ -23,36 +23,18 @@ Está pensado para equipos académicos, áreas de calidad, producción de conten
 
 En entornos académicos y documentales, los enlaces rotos generan:
 
-- mala experiencia del usuario final,
-- pérdida de tiempo en validaciones manuales,
-- materiales desactualizados,
-- reprocesos operativos.
-
-Esta herramienta centraliza el flujo en una sola pantalla y convierte la revisión de enlaces en un proceso **más rápido, repetible y trazable**.
+- Mala experiencia del usuario final.
+- Pérdida de tiempo en validaciones manuales.
+- Materiales desactualizados.
 
 ---
-
-## ¿Para quién está pensado?
-
-### Usuarios no técnicos
 
 El aplicativo permite:
 
-- cargar archivos desde la interfaz,
-- ejecutar el flujo sin programar,
-- visualizar progreso y estados,
-- descargar reportes finales listos para revisión.
-
-### Usuarios técnicos
-
-El proyecto también está preparado para:
-
-- mantener un pipeline de procesamiento en **etapas**,
-- reutilizar resultados con `st.session_state`,
-- separar lógica principal y helpers por tipo de contenido,
-- extender reglas de validación de enlaces por dominio, tipo de archivo o contexto institucional.
-
----
+- Cargar archivos desde la interfaz.
+- Ejecutar el flujo sin programar.
+- Visualizar progreso y estados.
+- Descargar reportes finales listos para revisión.
 
 ## Módulos del aplicativo
 
@@ -62,11 +44,11 @@ La aplicación tiene **2 módulos principales**:
 
 Pantalla informativa que explica:
 
-- propósito del sistema,
-- cobertura de formatos,
-- funcionalidades principales,
-- flujo de trabajo,
-- lineamientos de seguridad y privacidad.
+- Propósito del sistema.
+- Cobertura de formatos.
+- Funcionalidades principales.
+- Flujo de trabajo.
+- Lineamientos de seguridad y privacidad.
 
 ### 2. Report Broken Link
 
@@ -89,11 +71,11 @@ El flujo puede entenderse en **4 grandes fases**:
 
 Además de la descarga masiva, el usuario puede cargar directamente:
 
-- **PDF**,
-- **DOCX**,
-- **PPTX**,
-- **ZIP** con contenidos **H5P**,
-- **ZIP** con contenidos **XLF / Rise**.
+- **PDF**
+- **DOCX**
+- **PPTX**
+- **ZIP** con contenidos **H5P**
+- **ZIP** con contenidos **XLF / Rise**
 
 ### Fase 3. Extracción y preparación
 
@@ -108,17 +90,17 @@ Además de la descarga masiva, el usuario puede cargar directamente:
 - Se descartan formatos inválidos.
 - Se consulta el estado HTTP de cada URL.
 - Se aplican reglas de clasificación avanzada:
-  - enlaces activos,
-  - rotos reales,
-  - soft-404,
-  - accesos restringidos,
-  - errores transitorios,
-  - dominios validados manualmente.
+  - Enlaces activos
+  - Rotos reales
+  - Soft-404
+  - Accesos restringidos
+  - Errores transitorios
+  - Dominios validados manualmente
 - Finalmente se genera un **Excel Status** con el resultado final.
 
 ---
 
-## Flujo explicado para usuarios no técnicos
+## Flujo 
 
 ```text
 Excel con URLs
@@ -136,9 +118,9 @@ Excel final con estado ACTIVO / ROTO
 
 ---
 
-## Arquitectura explicada de forma sencilla
+## Arquitectura 
 
-La arquitectura se puede entender en **5 capas**.
+La arquitectura  en **5 capas**.
 
 ### 1. Capa de interfaz
 
@@ -146,14 +128,7 @@ Es la parte visible para el usuario.
 
 Incluye:
 
-- sidebar,
-- módulos,
-- expanders,
-- métricas,
-- barras de progreso,
-- chips de estado,
-- botones de descarga,
-- tablas de resultados.
+- Sidebar, módulos, expanders, métricas, barras de progreso, chips de estado, botones de descarga, tablas de resultados.
 
 ### 2. Capa de orquestación
 
@@ -161,41 +136,39 @@ Controla el flujo del proceso usando `st.session_state`.
 
 Esta capa decide:
 
-- qué pasos ya terminaron,
-- qué resultados deben reutilizarse,
-- cuándo reiniciar el pipeline,
-- qué archivos están disponibles en cada etapa.
+- Qué pasos ya terminaron.
+- Qué resultados deben reutilizarse.
+- Cuándo reiniciar el pipeline.
+- Qué archivos están disponibles en cada etapa.
 
 ### 3. Capa de ingesta y archivos
 
 Se encarga de recibir archivos desde:
 
-- carga manual,
-- descargas masivas,
+- Carga manual.
+- Descargas masivas.
 - ZIP con contenidos estructurados.
-
-También organiza directorios temporales y rutas de trabajo.
 
 ### 4. Capa de procesamiento documental
 
 Transforma y analiza los documentos:
 
-- PDF → DOCX,
-- lectura de Word,
-- lectura de PowerPoint,
-- extracción de texto desde H5P,
-- extracción de texto desde XLF / Rise.
+- PDF → DOCX.
+- Lectura de Word.
+- Lectura de PowerPoint.
+- Extracción de texto desde H5P.
+- Extracción de texto desde XLF / Rise.
 
 ### 5. Capa de validación y salida
 
 Aplica la lógica de validación de enlaces y genera la salida final:
 
-- normalización de URLs,
-- validación estructural,
-- verificación HTTP,
-- heurísticas de soft-404,
-- whitelist institucional,
-- exportación del reporte en Excel.
+- Normalización de URLs.
+- Validación estructural.
+- Verificación HTTP.
+- Heurísticas de soft-404.
+- Whitelist institucional.
+- Exportación del reporte en Excel.
 
 ---
 
@@ -233,16 +206,15 @@ Archivo principal del aplicativo en producción.
 
 Responsabilidades:
 
-- configuración de Streamlit,
-- render de módulos,
-- control del flujo unificado,
-- persistencia de estado,
-- procesamiento de descargas,
-- extracción de links,
-- validación final,
-- exportación de reportes.
+- Configuración de Streamlit.
+- Render de módulos.
+- Control del flujo unificado.
+- Persistencia de estado.
+- Procesamiento de descargas.
+- Extracción de links.
+- Validación final.
+- Exportación de reportes.
 
-> En la versión analizada de esta documentación, el archivo principal corresponde al script cargado como `brokenCheck.py`.
 
 ### `brokenCheck_h5p_helper.py`
 
@@ -250,12 +222,12 @@ Helper especializado para paquetes **H5P**.
 
 Responsabilidades:
 
-- abrir ZIPs H5P,
-- detectar archivos `.h5p` y reportes Excel asociados,
-- extraer texto útil desde JSON, HTML y TXT internos,
-- generar archivos `.txt` por contenido,
-- construir un **reporte H5P unificado**,
-- extraer links desde los TXT generados.
+- Abrir ZIPs H5P.
+- Detectar archivos `.h5p` y reportes Excel asociados.
+- extraer texto útil desde JSON, HTML y TXT internos.
+- Generar archivos `.txt` por contenido.
+- Construir un **reporte H5P unificado**.
+- Extraer links desde los TXT generados.
 
 ### `brokenCheck_rise_helper.py`
 
@@ -263,13 +235,13 @@ Helper especializado para paquetes **Rise / XLF / XLIFF / XML**.
 
 Responsabilidades:
 
-- abrir ZIPs de Rise,
-- detectar archivos XLF/XLIFF/XML,
-- parsear contenido de etiquetas `source`, `target` y `seg-source`,
-- convertir contenido a TXT,
-- leer reportes Excel `reporte_rise_*`,
-- generar un **reporte Rise unificado**,
-- extraer links desde los TXT procesados.
+- Abrir ZIPs de Rise.
+- Detectar archivos XLF/XLIFF/XML.
+- Parsear contenido de etiquetas `source`, `target` y `seg-source`.
+- Convertir contenido a TXT.
+- Leer reportes Excel `reporte_rise_*`.
+- Generar un **reporte Rise unificado**.
+- Extraer links desde los TXT procesados.
 
 ---
 
@@ -292,10 +264,10 @@ Clase principal:
 
 Permite:
 
-- procesar múltiples PDFs,
-- usar procesamiento paralelo por páginas,
-- convertir PDFs a DOCX,
-- preservar el texto para etapas posteriores.
+- Procesar múltiples PDFs.
+- Usar procesamiento paralelo por páginas.
+- Convertir PDFs a DOCX.
+- Preservar el texto para etapas posteriores.
 
 ### Extracción de links
 
@@ -340,9 +312,9 @@ Funciones relevantes:
 
 ### Paquetes comprimidos
 
-- `.zip` con contenidos **H5P**
-- `.zip` con contenidos **Rise / XLF / XLIFF / XML**
-- `.zip` con colecciones de documentos compatibles
+- `.zip` con contenidos **H5P**.
+- `.zip` con contenidos **Rise / XLF / XLIFF / XML**.
+- `.zip` con colecciones de documentos compatibles.
 
 ---
 
@@ -350,13 +322,13 @@ Funciones relevantes:
 
 El sistema puede generar los siguientes artefactos:
 
-- ZIP con documentos descargados,
-- CSV de descargas fallidas,
-- DOCX generados desde PDFs,
-- TXT procesados desde H5P,
-- TXT procesados desde Rise,
-- Excel unificado H5P,
-- Excel unificado Rise,
+- ZIP con documentos descargados.
+- CSV de descargas fallidas.
+- DOCX generados desde PDFs.
+- TXT procesados desde H5P.
+- TXT procesados desde Rise.
+- Excel unificado H5P.
+- Excel unificado Rise.
 - Excel final **Status** con el estado de cada enlace.
 
 ---
@@ -386,15 +358,12 @@ El checker no se limita a revisar un código HTTP.
 
 También incorpora lógica adicional para reducir falsos positivos:
 
-- validación de estructura de URL,
-- detección de enlaces truncados,
-- validación específica para YouTube y X/Twitter,
-- descarte de búsquedas de Google como enlaces finales,
-- revisión de `Content-Type` esperado,
-- detección de **soft-404**,
-- tratamiento especial para dominios confiables,
-- **lista blanca institucional** para URLs aprobadas manualmente,
-- tratamiento especial para `canvas.utp`, que se marca como roto por regla de negocio.
+- Validación de estructura de URL.
+- Detección de enlaces truncados.
+- Detección de **soft-404**.
+- Tratamiento especial para dominios confiables.
+- **lista blanca institucional** para URLs aprobadas manualmente.
+- Tratamiento especial para `canvas.utp`, que se marca como roto por regla de negocio.
 
 ---
 
@@ -404,25 +373,14 @@ También incorpora lógica adicional para reducir falsos positivos:
 
 La app usa `st.session_state` para:
 
-- evitar ejecuciones repetidas,
-- mantener archivos intermedios disponibles,
-- preservar resultados entre pasos,
-- soportar reinicio controlado del pipeline.
+- Evitar ejecuciones repetidas.
+- Mantener archivos intermedios disponibles.
+- Preservar resultados entre pasos.
+- Soportar reinicio controlado del pipeline.
 
 ### Procesamiento por rutas en disco
 
 En lugar de depender solo de objetos en memoria, la aplicación trabaja con **rutas temporales en disco** para mejorar estabilidad y manejo de archivos grandes.
-
-### Enfoque modular
-
-La lógica especializada de H5P y Rise está separada en helpers, lo que facilita:
-
-- mantenimiento,
-- pruebas,
-- evolución por tipo de contenido,
-- menor acoplamiento del script principal.
-
----
 
 ## Requisitos técnicos
 
@@ -443,52 +401,16 @@ Se recomienda usar **Python 3.10 o superior**.
 
 ---
 
-## Ejecución local
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Si en tu entorno el archivo principal conserva el nombre actual, ejecuta:
-
-```bash
-streamlit run brokenCheck.py
-```
-
----
-
 ## Recomendaciones operativas
 
 Para un uso más estable en producción:
 
-- procesar entre **500 y 700 URLs** por ejecución en Streamlit Cloud,
-- dividir archivos muy grandes en bloques cuando sea necesario,
-- procesar archivos **H5P** muy pesados de forma independiente,
-- validar dependencias instaladas antes de desplegar,
-- conservar una estructura clara de carpetas temporales y salida.
+- Procesar entre **500 y 700 URLs** por ejecución en Streamlit Cloud.
+- Dividir archivos muy grandes en bloques cuando sea necesario.
+- Validar dependencias instaladas antes de desplegar.
 
 ---
 
-## Seguridad y privacidad
-
-El aplicativo fue diseñado con un enfoque conservador de procesamiento:
-
-- no depende de almacenamiento permanente de documentos del usuario,
-- utiliza archivos temporales de trabajo,
-- limita la persistencia a la sesión de Streamlit,
-- permite trazabilidad de fallos sin exponer más información de la necesaria.
-
----
-
-## Casos de uso típicos
-
-- revisión de sílabos o materiales académicos antes de publicación,
-- control de calidad de enlaces en documentos institucionales,
-- verificación de repositorios documentales descargados desde Excel,
-- consolidación de enlaces de contenidos exportados desde H5P y Rise.
-
----
 
 ## Problemas frecuentes
 
@@ -510,8 +432,7 @@ Revisa si las URLs terminan en formatos permitidos:
 
 Confirma que el ZIP contenga:
 
-- archivos válidos del paquete,
-- y, si aplica, reportes Excel con la estructura esperada.
+- Archivos válidos del paquete.
 
 ### El proceso consume mucha memoria en cloud
 
@@ -521,47 +442,11 @@ Divide el trabajo en lotes más pequeños o ejecuta el aplicativo en local.
 
 Puede deberse a:
 
-- reglas institucionales,
-- contenido protegido por anti-bot,
-- soft-404,
-- redirecciones no válidas,
-- errores de contenido devuelto por el servidor.
-
----
-
-## Recomendaciones de mantenimiento del README
-
-Este README debería actualizarse cuando cambie alguno de estos puntos:
-
-- flujo del pipeline,
-- formatos soportados,
-- estructura del Excel final,
-- reglas de validación,
-- helpers disponibles,
-- limitaciones operativas del entorno cloud.
-
----
-
-## Roadmap sugerido
-
-Mejoras recomendadas para futuras versiones:
-
-- separar todavía más la UI de la lógica de negocio,
-- agregar pruebas automáticas para validación y extracción,
-- documentar ejemplos reales de entrada y salida,
-- centralizar configuraciones de dominios en un archivo independiente,
-- añadir carpeta `/docs` con diagramas visuales de arquitectura.
-
----
-
-## Licencia
-
-Define aquí la licencia del proyecto según tu política interna:
-
-- uso interno institucional,
-- MIT,
-- Apache 2.0,
-- u otra aplicable.
+- Reglas institucionales.
+- Contenido protegido por anti-bot.
+- Soft-404.
+- Redirecciones no válidas.
+- Errores de contenido devuelto por el servidor.
 
 ---
 
