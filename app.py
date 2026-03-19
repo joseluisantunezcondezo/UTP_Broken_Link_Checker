@@ -1869,6 +1869,13 @@ def _clear_source_url_for_h5p_rise_rows(df: pd.DataFrame) -> pd.DataFrame:
     Conserva `link_class` y deja `source_url` vacío únicamente para filas
     provenientes de H5P / XLF-Rise cuando ambos valores llegan duplicados
     al reporte final.
+
+    Importante:
+    - La limpieza NO depende de que `Página/Diapositiva` esté vacía.
+      En el flujo actual, H5P y XLF-Rise pueden completar la página más tarde,
+      pero aun así `link_class` y `source_url` siguen siendo el mismo link de origen.
+    - No afecta el caso del Excel de URLs tradicional; sólo actúa cuando la fila
+      realmente parece provenir de H5P o XLF-Rise.
     """
     if df is None or df.empty:
         return df
@@ -1881,12 +1888,37 @@ def _clear_source_url_for_h5p_rise_rows(df: pd.DataFrame) -> pd.DataFrame:
     lc = df["link_class"].fillna("").astype(str).str.strip()
     src = df["source_url"].fillna("").astype(str).str.strip()
 
-    if "Página/Diapositiva" in df.columns:
-        page_series = df["Página/Diapositiva"].fillna("").astype(str).str.strip()
-    else:
-        page_series = pd.Series("", index=df.index, dtype="object")
+    archivo_series = (
+        df["Archivo"].fillna("").astype(str).str.strip()
+        if "Archivo" in df.columns
+        else pd.Series("", index=df.index, dtype="object")
+    )
+    name_series = (
+        df["name"].fillna("").astype(str).str.strip()
+        if "name" in df.columns
+        else pd.Series("", index=df.index, dtype="object")
+    )
 
-    mask_h5p_rise = lc.ne("") & src.ne("") & lc.eq(src) & page_series.eq("")
+    archivo_lower = archivo_series.str.lower()
+    lc_lower = lc.str.lower()
+    src_lower = src.str.lower()
+    name_lower = name_series.str.lower()
+
+    mask_h5p = (
+        archivo_lower.str.endswith(".h5p")
+        | archivo_lower.str.fullmatch(r"\d{8,}")
+        | lc_lower.str.contains(r"(?:^|//)(?:[^/]+\.)?h5p\.com/content/", regex=True, na=False)
+        | src_lower.str.contains(r"(?:^|//)(?:[^/]+\.)?h5p\.com/content/", regex=True, na=False)
+    )
+
+    mask_rise = (
+        archivo_lower.str.endswith((".xlf", ".xliff", ".xml"))
+        | lc_lower.str.contains("rise.articulate.com/authoring/", regex=False, na=False)
+        | src_lower.str.contains("rise.articulate.com/authoring/", regex=False, na=False)
+        | name_lower.str.contains("rise", regex=False, na=False)
+    )
+
+    mask_h5p_rise = lc.ne("") & src.ne("") & lc.eq(src) & (mask_h5p | mask_rise)
     if mask_h5p_rise.any():
         df.loc[mask_h5p_rise, "source_url"] = ""
 
@@ -5277,7 +5309,6 @@ def _build_rise_alias_candidates(value: Any) -> List[str]:
 
     return [item for item in candidates if item]
 
-
 def _build_h5p_page_map_registry(zip_uploads: Sequence[Tuple[str, str]]) -> Dict[str, Dict[str, str]]:
     registry: Dict[str, Dict[str, str]] = {}
 
@@ -5589,7 +5620,6 @@ def _extract_links_from_pptx_bytes(pptx_bytes: bytes, filename: str) -> List[Dic
             )
 
     return rows
-
 
 def _extract_links_from_pdf_path(
     pdf_path: str,
@@ -8098,49 +8128,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
